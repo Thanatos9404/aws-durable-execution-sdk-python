@@ -2567,3 +2567,19 @@ def test_cloud_runner_wait_for_result_success(mock_boto3):
         mock_from_history.assert_called_once_with(
             mock_execution_response, mock_history_response
         )
+
+
+@pytest.mark.parametrize("timeout", [None, 0.25])
+@patch("aws_durable_execution_sdk_python_testing.runner.Executor")
+def test_local_runner_forwards_pause_timeout(
+    mock_executor_class: Mock, timeout: float | None
+) -> None:
+    with DurableFunctionTestRunner(Mock()) as runner:
+        if timeout is None:
+            runner.pause_execution("test-arn")
+        else:
+            runner.pause_execution("test-arn", timeout=timeout)
+
+    mock_executor_class.return_value.pause_execution.assert_called_once_with(
+        "test-arn", timeout=60 if timeout is None else timeout
+    )

@@ -9,8 +9,9 @@ harness in ``executor_checkpoint_test.py``.
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Future
 from copy import deepcopy
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from aws_durable_execution_sdk_python.lambda_service import (
@@ -416,3 +417,69 @@ def test_pause_and_resume_raise_for_an_unknown_execution() -> None:
             call("arn:unknown")
         assert str(exc_info.value) == "Durable Execution does not exist"
 
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("-inf"), float("nan")])
+def test_pause_rejects_invalid_timeout_before_submitting(timeout: float) -> None:
+    executor, store, execution, _ = _make_executor_with_started_execution()
+    arn = execution.durable_execution_arn
+
+    with patch.object(executor._registry, "submit") as submit:  # noqa: SLF001
+        with pytest.raises(ValueError, match="timeout must be finite and positive"):
+            executor.pause_execution(arn, timeout=timeout)
+    submit.assert_not_called()
+    assert not store.load(arn).is_paused
+
+
+def test_pause_returns_when_invocation_becomes_idle_before_deadline() -> None:
+    executor, store, execution, _ = _make_executor_with_started_execution()
+    arn = execution.durable_execution_arn
+    with patch("aws_durable_execution_sdk_python_testing.executor.time") as clock:
+        clock.monotonic.side_effect = [10, 10, 10.001]
+        clock.sleep.side_effect = lambda _: executor._set_invocation_gate(  # noqa: SLF001
+            arn, InvocationState.PRE_INVOKE
+        )
+        executor.pause_execution(arn, timeout=1)
+
+    assert store.load(arn).is_paused
+
+
+def test_pause_times_out_waiting_for_worker_without_cancelling_request() -> None:
+    executor, store, execution, _ = _make_executor_with_started_execution()
+    arn = execution.durable_execution_arn
+    pending: Future[None] = Future()
+
+    with (
+        patch.object(executor._registry, "submit", return_value=pending) as submit,  # noqa: SLF001
+        patch("aws_durable_execution_sdk_python_testing.executor.time") as clock,
+    ):
+        clock.monotonic.side_effect = [10, 11]
+        with pytest.raises(TimeoutError) as exc_info:
+            executor.pause_execution(arn, timeout=1)
+
+    assert str(exc_info.value) == (
+        f"Execution {arn} did not become idle within 1 seconds of requesting pause. "
+        "The pause request has not been cancelled."
+    )
+    assert not pending.done()
+    assert not pending.cancelled()
+    assert not store.load(arn).is_paused
+    clock.sleep.assert_not_called()
+    assert submit.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ResourceNotFoundException("Durable Execution does not exist"),
+        TimeoutError("store timed out"),
+    ],
+)
+def test_pause_preserves_worker_errors(error: Exception) -> None:
+    executor, _, execution, _ = _make_executor_with_started_execution()
+    failed: Future[None] = Future()
+    failed.set_exception(error)
+
+    with patch.object(executor._registry, "submit", return_value=failed):  # noqa: SLF001
+        with pytest.raises(type(error)) as exc_info:
+            executor.pause_execution(execution.durable_execution_arn, timeout=1)
+    assert exc_info.value is error

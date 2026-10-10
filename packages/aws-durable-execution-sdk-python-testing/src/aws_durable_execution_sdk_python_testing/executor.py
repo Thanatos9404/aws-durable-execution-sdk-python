@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 import time
 import uuid
+from concurrent.futures import wait
 from datetime import datetime
 from typing import TYPE_CHECKING, assert_never
 
@@ -1793,42 +1795,68 @@ class Executor(ExecutionObserver):
             completion_event=completion_event,
         )
 
-    def pause_execution(self, execution_arn: str) -> None:
-        """Make the local checkpoint server answer this execution's
-        checkpoints without a token, starting now.
+    def pause_execution(self, execution_arn: str, timeout: float = 60) -> None:
+        """Experimental; may change or be removed in a future release.
 
-        Experimental; may change or be removed in a future release.
+        Pause an execution and wait for its current invocation to stop.
 
-        The invocation running now, if any, is answered without a token
-        on its next checkpoint. That checkpoint is accepted - its updates
-        stay durable - but the invocation reports PENDING, and no further
-        checkpoint of its is accepted. No new invocation starts until
-        resume_execution() is called.
+        If a running invocation sends another checkpoint after the pause is
+        applied, its updates are accepted and saved. The response omits the
+        checkpoint token, causing the SDK to end the invocation with PENDING.
+        Further checkpoints from that invocation are rejected.
 
-        Idempotent; a no-op once the execution has finished.
-        Resolves once no invocation of this execution is running.
+        Returns once the pause request is applied and no invocation is running.
+        A running step is not interrupted.
+
+        Repeated calls leave an existing pause unchanged and wait again for
+        the running invocation to stop. Completed executions are unchanged.
+
+        If this call times out, the pause request is not cancelled.
+
+        Args:
+            execution_arn: Execution to pause.
+            timeout: Maximum wait in real seconds. Must be finite and positive.
 
         Raises:
             InvalidParameterValueException: If the ARN is blank.
             ResourceNotFoundException: If the execution does not exist.
+            ValueError: If timeout is not finite and positive.
+            TimeoutError: If the pause wait times out.
         """
+
+        if not math.isfinite(timeout) or timeout <= 0:
+            msg = "timeout must be finite and positive"
+            raise ValueError(msg)
+        deadline = time.monotonic() + timeout
+
         self._validate_execution_arn(execution_arn)
-        self._registry.submit(
+        pause = self._registry.submit(
             execution_arn,
             CallableTask(lambda: self._set_paused(execution_arn)),
-        ).result()
-        self._wait_until_idle(execution_arn)
+        )
+
+        timeout_message = (
+            f"Execution {execution_arn} did not become idle within {timeout:g} seconds "
+            "of requesting pause. The pause request has not been cancelled."
+        )
+
+        done, _ = wait([pause], timeout=max(0, deadline - time.monotonic()))
+        if not done:
+            raise TimeoutError(timeout_message)
+        pause.result()
+
+        self._wait_until_idle(execution_arn, deadline, timeout_message)
 
     def resume_execution(self, execution_arn: str) -> None:
-        """Make the local checkpoint server answer this execution's
+        """Experimental; may change or be removed in a future release.
+
+        Make the local checkpoint server answer this execution's
         checkpoints with a token again.
 
-        Experimental; may change or be removed in a future release.
+        Starts the invocation that pause_execution(arn) held back, if any.
 
-        Starts the invocation that pause_execution() held back, if any.
-
-        Idempotent; a no-op once the execution has finished or if it was
-        not paused.
+        Repeated calls leave an execution that is not paused unchanged.
+        Completed executions are unchanged.
 
         Raises:
             InvalidParameterValueException: If the ARN is blank.
@@ -1858,10 +1886,15 @@ class Executor(ExecutionObserver):
         if deferred:
             self._invoke_execution(execution_arn)
 
-    def _wait_until_idle(self, execution_arn: str) -> None:
-        """Block until no invocation of ``execution_arn`` is running."""
+    def _wait_until_idle(
+        self, execution_arn: str, deadline: float, timeout_message: str
+    ) -> None:
+        """Wait for no invocation to be running. Raise at the deadline."""
         while self._invocation_gate(execution_arn) is InvocationState.INVOKING:
-            time.sleep(0.005)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(timeout_message)
+            time.sleep(min(0.005, remaining))
 
     def _complete_workflow(
         self, execution_arn: str, result: str | None, error: ErrorObject | None

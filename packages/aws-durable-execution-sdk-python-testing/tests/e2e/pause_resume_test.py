@@ -173,8 +173,8 @@ def test_wait_elapsing_while_paused_defers_invocation_until_resumed() -> None:
     assert result.status is InvocationStatus.SUCCEEDED
     assert result.result == json.dumps("done")
 
-def test_pause_execution_on_unknown_arn_raises_not_found() -> None:
 
+def test_pause_execution_on_unknown_arn_raises_not_found() -> None:
     def _handler(event: Any, context: DurableContext) -> str:  # noqa: ARG001
         return "done"
 
@@ -182,12 +182,13 @@ def test_pause_execution_on_unknown_arn_raises_not_found() -> None:
         handler=durable_execution(_handler), execution_timeout=15
     ) as runner:
         with pytest.raises(ResourceNotFoundException) as exc_info:
-            runner.pause_execution("arn:aws:states:us-west-2:123456789012:express:unknown-fn:unknown-exec:0000")
+            runner.pause_execution(
+                "arn:aws:states:us-west-2:123456789012:express:unknown-fn:unknown-exec:0000"
+            )
         assert exc_info.value.Message == "Durable Execution does not exist"
 
 
 def test_resume_execution_on_unknown_arn_raises_not_found() -> None:
-
     def _handler(event: Any, context: DurableContext) -> str:  # noqa: ARG001
         return "done"
 
@@ -195,5 +196,55 @@ def test_resume_execution_on_unknown_arn_raises_not_found() -> None:
         handler=durable_execution(_handler), execution_timeout=15
     ) as runner:
         with pytest.raises(ResourceNotFoundException) as exc_info:
-            runner.resume_execution("arn:aws:states:us-west-2:123456789012:express:unknown-fn:unknown-exec:0000")
+            runner.resume_execution(
+                "arn:aws:states:us-west-2:123456789012:express:unknown-fn:unknown-exec:0000"
+            )
         assert exc_info.value.Message == "Durable Execution does not exist"
+
+
+@pytest.mark.parametrize("skip_time", [False, True])
+def test_pause_timeout_preserves_request_and_execution_can_resume(
+    skip_time: bool,
+) -> None:
+    step_started = ThreadingEvent()
+    release_step = ThreadingEvent()
+    second_started = ThreadingEvent()
+
+    @durable_execution
+    def handler(_event: Any, context: DurableContext) -> str:
+        def first(_step_context: Any) -> str:
+            step_started.set()
+            assert release_step.wait(10), "Test did not release the first step"
+            return "s1"
+
+        def second(_step_context: Any) -> str:
+            second_started.set()
+            return "s2"
+
+        return context.step(first, name="step1") + context.step(second, name="step2")
+
+    with DurableFunctionTestRunner(
+        handler=handler, execution_timeout=30, skip_time=skip_time
+    ) as runner:
+        arn = runner.run_async(input="{}")
+
+        try:
+            assert step_started.wait(5), "First step did not start"
+            with pytest.raises(TimeoutError, match="did not become idle"):
+                runner.pause_execution(arn, timeout=0.05)
+            assert not second_started.is_set()
+        finally:
+            release_step.set()
+
+        # second pause to wait for invocation to actually stop
+        runner.pause_execution(arn, timeout=5)
+
+        assert not second_started.is_set()
+        assert not _has_history_event(runner, arn, "ExecutionSucceeded")
+
+        runner.resume_execution(arn)
+        result = runner.wait_for_result(arn, timeout=5)
+
+    assert result.status is InvocationStatus.SUCCEEDED
+    assert result.result == json.dumps("s1s2")
+    assert second_started.is_set()
