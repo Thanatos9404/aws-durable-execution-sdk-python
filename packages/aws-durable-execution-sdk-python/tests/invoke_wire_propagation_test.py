@@ -23,6 +23,7 @@ from aws_durable_execution_sdk_python.lambda_service import (
     ChainedInvokeOptions,
     LambdaClient,
     OperationSubType,
+    OperationType,
     OperationUpdate,
 )
 
@@ -48,7 +49,11 @@ def test_chained_options_and_update_round_trip(
     assert ChainedInvokeOptions.from_dict(expected) == options
     update = OperationUpdate.create_invoke_start(
         OperationIdentifier(
-            "invoke-a", OperationSubType.CHAINED_INVOKE, "group", "child"
+            "invoke-a",
+            OperationSubType.CHAINED_INVOKE,
+            "group",
+            "child",
+            operation_type=OperationType.CHAINED_INVOKE,
         ),
         '{"preserved": true}',
         options,
@@ -105,6 +110,7 @@ def test_public_botocore_serializes_each_invokes_header(
                 OperationSubType.CHAINED_INVOKE,
                 "group",
                 f"child-{index}",
+                operation_type=OperationType.CHAINED_INVOKE,
             ),
             json.dumps({"index": index}),
             ChainedInvokeOptions(

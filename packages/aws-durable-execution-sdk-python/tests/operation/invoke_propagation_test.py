@@ -28,7 +28,11 @@ from aws_durable_execution_sdk_python.state import CheckpointedResult, Execution
 
 
 IDENTIFIER = OperationIdentifier(
-    "invoke", OperationSubType.CHAINED_INVOKE, "parent", "named-invoke"
+    "invoke",
+    OperationSubType.CHAINED_INVOKE,
+    "parent",
+    "named-invoke",
+    operation_type=OperationType.CHAINED_INVOKE,
 )
 
 
