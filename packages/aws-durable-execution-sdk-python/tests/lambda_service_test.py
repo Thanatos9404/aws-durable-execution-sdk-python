@@ -226,13 +226,9 @@ def test_error_object_from_message_empty():
     assert error.stack_trace is None
 
 
-def test_invocation_output_pending_for_revoked_checkpoint_token_is_bare_pending():
-    """A revoked token response does not put the handler error on the wire."""
-    output = (
-        DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-            RuntimeError("handler failed")
-        )
-    )
+def test_invocation_output_create_pending_is_bare_pending():
+    """A pending response contains neither a result nor an error."""
+    output = DurableExecutionInvocationOutput.create_pending()
 
     assert output.status is InvocationStatus.PENDING
     assert output.error is None

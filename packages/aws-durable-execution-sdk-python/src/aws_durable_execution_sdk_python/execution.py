@@ -350,9 +350,7 @@ def durable_execution(
                         "Checkpoint token revoked; ending invocation with "
                         "PENDING instead of SUCCEEDED."
                     )
-                    output = DurableExecutionInvocationOutput(
-                        status=InvocationStatus.PENDING
-                    ).to_dict()
+                    output = DurableExecutionInvocationOutput.create_pending().to_dict()
                 else:
                     serialized_result = json.dumps(result)
                     # large response handling here. Remember if checkpointing to complete, NOT to include
@@ -417,16 +415,12 @@ def durable_execution(
             except SuspendExecution:
                 # User code suspended - stop background checkpointing thread
                 logger.debug("Suspending execution...")
-                output = DurableExecutionInvocationOutput(
-                    status=InvocationStatus.PENDING
-                ).to_dict()
+                output = DurableExecutionInvocationOutput.create_pending().to_dict()
 
             except CheckpointError as e:
                 # Checkpoint system is broken - stop background thread and exit immediately.
                 if execution_state.is_checkpoint_token_revoked:
-                    output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-                        e
-                    ).to_dict()
+                    output = DurableExecutionInvocationOutput.create_pending().to_dict()
                 else:
                     logger.exception(
                         "Checkpoint system failed",
@@ -435,9 +429,7 @@ def durable_execution(
                     output = handle_checkpoint_error(e).to_dict()
             except InvocationError as e:
                 if execution_state.is_checkpoint_token_revoked:
-                    output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-                        e
-                    ).to_dict()
+                    output = DurableExecutionInvocationOutput.create_pending().to_dict()
                 else:
                     # Non-retryable Durable API errors (e.g., customer configuration issues,
                     # 4xx client errors) will never succeed on retry — fail the execution immediately.
@@ -456,9 +448,7 @@ def durable_execution(
                         raise
             except ExecutionError as e:
                 if execution_state.is_checkpoint_token_revoked:
-                    output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-                        e
-                    ).to_dict()
+                    output = DurableExecutionInvocationOutput.create_pending().to_dict()
                 else:
                     logger.exception(
                         "Execution error. Must fail execution without retry."
@@ -470,9 +460,7 @@ def durable_execution(
             except Exception as e:
                 # all user-space errors go here
                 if execution_state.is_checkpoint_token_revoked:
-                    output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-                        e
-                    ).to_dict()
+                    output = DurableExecutionInvocationOutput.create_pending().to_dict()
                 else:
                     logger.exception("Execution failed")
 
@@ -506,9 +494,7 @@ def durable_execution(
                             # Revocation can occur after the check at the top of this handler and
                             # before this checkpoint. In that case create_checkpoint_sync raises
                             # SuspendExecution. So return PENDING instead of FAILED.
-                            output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-                                e
-                            ).to_dict()
+                            output = DurableExecutionInvocationOutput.create_pending().to_dict()
                         except CheckpointError as checkpoint_error:
                             output = handle_checkpoint_error(checkpoint_error).to_dict()
                         else:
@@ -527,9 +513,7 @@ def durable_execution(
                 "Checkpoint token revoked during invocation cleanup; ending "
                 "invocation with PENDING instead of terminal status."
             )
-            return DurableExecutionInvocationOutput(
-                status=InvocationStatus.PENDING
-            ).to_dict()
+            return DurableExecutionInvocationOutput.create_pending().to_dict()
 
         return output
 

@@ -1001,9 +1001,7 @@ def test_durable_execution_suspend_execution():
 
     result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Result" not in result
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
 
 
 def _revoke_checkpoint_token_instead_of_checkpointing(self: ExecutionState) -> None:
@@ -1042,8 +1040,7 @@ def test_durable_execution_returns_pending_when_token_revoked_after_return():
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Result" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
     mock_client.checkpoint.assert_not_called()
 
 
@@ -1069,9 +1066,7 @@ def test_durable_execution_returns_pending_when_background_token_revoked_during_
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Result" not in result
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
     mock_client.checkpoint.assert_not_called()
 
 
@@ -1095,23 +1090,16 @@ def test_durable_execution_returns_pending_when_token_revoked_during_close_after
     with patch.object(ExecutionState, "close", close_with_revoked_token):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Result" not in result
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
     mock_client.checkpoint.assert_not_called()
 
 
 def test_durable_execution_returns_pending_when_token_revoked_on_invocation_error():
     """An InvocationError raised after the token is revoked answers PENDING, not FAILED.
 
-    A retryable InvocationError would otherwise be re-raised to trigger a
-    Lambda retry - that retry would present a token the service already
-    rejected. The response is bare PENDING with no Error, matching every
-    other PENDING exit and the wire contract shared across all five SDKs;
-    the error does not reach plugins on this path (see
-    create_pending_for_revoked_checkpoint_token's docstring), but the
-    condition is recorded once via the single WARN log line in
-    ExecutionState._handle_revoked_checkpoint_token.
+    A retryable InvocationError would otherwise trigger a Lambda retry.
+    Revocation requires the invocation to stop instead. So the response is
+    bare PENDING, without the handler error or a result.
     """
     mock_client = Mock(spec=DurableServiceClient)
 
@@ -1130,8 +1118,7 @@ def test_durable_execution_returns_pending_when_token_revoked_on_invocation_erro
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
 
 
 def test_durable_execution_returns_pending_when_token_revoked_on_execution_error():
@@ -1156,8 +1143,7 @@ def test_durable_execution_returns_pending_when_token_revoked_on_execution_error
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
 
 
 def test_durable_execution_returns_pending_when_token_revoked_on_generic_error():
@@ -1182,8 +1168,7 @@ def test_durable_execution_returns_pending_when_token_revoked_on_generic_error()
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
     mock_client.checkpoint.assert_not_called()
 
 
@@ -1212,8 +1197,7 @@ def test_durable_execution_returns_pending_when_token_revoked_on_checkpoint_erro
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
     mock_client.checkpoint.assert_not_called()
 
 
@@ -1240,7 +1224,7 @@ def test_durable_execution_oversized_result_abandoned_after_revocation_returns_p
     ):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
+    assert result == {"Status": InvocationStatus.PENDING.value}
     mock_client.checkpoint.assert_not_called()
 
 
@@ -1298,8 +1282,7 @@ def test_durable_execution_oversized_result_revoked_during_checkpoint_returns_pe
     with patch.object(ExecutionState, "create_checkpoint", _raise_suspended):
         result = test_handler(invocation_input, lambda_context)
 
-    assert result["Status"] == InvocationStatus.PENDING.value
-    assert "Error" not in result
+    assert result == {"Status": InvocationStatus.PENDING.value}
 
 
 def test_durable_execution_oversized_error_revoked_during_checkpoint_returns_pending() -> (
