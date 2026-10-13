@@ -1004,6 +1004,25 @@ def test_durable_execution_suspend_execution():
     assert result == {"Status": InvocationStatus.PENDING.value}
 
 
+def test_checkpoint_without_token_answers_pending() -> None:
+    """A tokenless step checkpoint suspends through the real background thread."""
+    mock_client = Mock(spec=DurableServiceClient)
+    mock_client.checkpoint.return_value = CheckpointOutput(
+        checkpoint_token=None,
+        new_execution_state=CheckpointUpdatedExecutionState(),
+    )
+
+    @durable_execution
+    def test_handler(event: Any, context: DurableContext) -> str:
+        return context.step(lambda _: "x", name="s1")
+
+    result = test_handler(_make_invocation_input(mock_client), _make_lambda_context())
+
+    assert result == {"Status": InvocationStatus.PENDING.value}
+    mock_client.checkpoint.assert_called_once()
+    mock_client.get_execution_state.assert_not_called()
+
+
 def _revoke_checkpoint_token_instead_of_checkpointing(self: ExecutionState) -> None:
     """Stand in for the background thread: simulate an already-revoked token.
 
