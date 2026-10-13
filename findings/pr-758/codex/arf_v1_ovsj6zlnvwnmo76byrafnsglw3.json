@@ -1,0 +1,1 @@
+{"finding_digest":"75649f656dad9ac77fc1c44056c8cbb6e98c7401bdf53e90084f14b5fdc700c7","finding_id":"arf_v1_ovsj6zlnvwnmo76byrafnsglw3","identity_key":"testing/model.py::eventerror.from_dict::empty-payload-operation-normalization","pull_request_number":758,"repository":{"full_name":"aws/aws-durable-execution-sdk-python","id":1052903600},"reviewer":"codex","schema_version":1}
