@@ -119,16 +119,20 @@ def test_early_sibling_callback_exports_under_real_parent_before_user_observatio
         ) as runner:
             arn = runner.run_async(input="{}")
             deadline = time.monotonic() + 10
-            callbacks = {}
+            callbacks: dict[str, str] = {}
             while time.monotonic() < deadline:
                 history = runner.get_execution_history(
                     arn, include_execution_data=True
                 ).events
-                callbacks = {
-                    event.name: event.callback_started_details.callback_id
-                    for event in history
-                    if event.event_type == "CallbackStarted"
-                }
+                callbacks = {}
+                for event in history:
+                    if event.event_type == "CallbackStarted":
+                        assert event.name is not None
+                        assert event.callback_started_details is not None
+                        assert event.callback_started_details.callback_id is not None
+                        callbacks[event.name] = (
+                            event.callback_started_details.callback_id
+                        )
                 if len(callbacks) == 2 and any(
                     event.event_type == "InvocationCompleted" for event in history
                 ):
@@ -150,6 +154,7 @@ def test_early_sibling_callback_exports_under_real_parent_before_user_observatio
                 arn, include_execution_data=True
             ).events
         assert result.status.value == "SUCCEEDED"
+        assert result.result is not None
         assert json.loads(result.result) == ["left", "right"]
         assert end_observed.is_set() and parent_entered.is_set()
         assert len(observed) == 1 and observed[0][0] == 2
