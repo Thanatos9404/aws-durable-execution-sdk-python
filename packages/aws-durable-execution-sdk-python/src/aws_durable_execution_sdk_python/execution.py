@@ -279,7 +279,7 @@ def durable_execution(
             ),
         )
 
-        output: MutableMapping[str, Any] | None = None
+        output: MutableMapping[str, Any]
 
         # Use ThreadPoolExecutor for concurrent execution of user code and background checkpoint processing
         with (
@@ -503,12 +503,12 @@ def durable_execution(
                         try:
                             execution_state.create_checkpoint_sync(failed_operation)
                         except SuspendExecution:
-                            if execution_state.is_checkpoint_token_revoked:
-                                output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
-                                    e
-                                ).to_dict()
-                            else:
-                                raise
+                            # Revocation can occur after the check at the top of this handler and
+                            # before this checkpoint. In that case create_checkpoint_sync raises
+                            # SuspendExecution. So return PENDING instead of FAILED.
+                            output = DurableExecutionInvocationOutput.create_pending_for_revoked_checkpoint_token(
+                                e
+                            ).to_dict()
                         except CheckpointError as checkpoint_error:
                             output = handle_checkpoint_error(checkpoint_error).to_dict()
                         else:
@@ -517,10 +517,6 @@ def durable_execution(
                             ).to_dict()
                     else:
                         output = result
-
-        if output is None:
-            msg = "Durable execution wrapper exited without an invocation output."
-            raise RuntimeError(msg)
 
         if (
             output.get("Status")

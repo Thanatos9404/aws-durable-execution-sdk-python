@@ -1302,6 +1302,62 @@ def test_durable_execution_oversized_result_revoked_during_checkpoint_returns_pe
     assert "Error" not in result
 
 
+def test_durable_execution_oversized_error_revoked_during_checkpoint_returns_pending() -> (
+    None
+):
+    """Revocation before an oversized-error checkpoint suspends the invocation.
+
+    Verifies:
+    * Checkpoint request is not sent and PENDING is returned.
+    * Plugins receive one PENDING invocation-end notification and no execution-end
+    notification.
+    """
+    mock_client = Mock(spec=DurableServiceClient)
+    plugin = _RecordingPlugin()
+    attempted_updates: list[OperationUpdate | None] = []
+    original_checkpoint_method = ExecutionState.create_checkpoint_sync
+
+    def checkpoint_with_revoked_token(
+        self: ExecutionState, operation_update: OperationUpdate | None = None
+    ) -> None:
+        # Confirm revocation has not occurred yet.
+        assert not self.is_checkpoint_token_revoked
+        # Capture the update so the test can verify that the oversized error reached the checkpoint path.
+        attempted_updates.append(operation_update)
+        # Simulate the checkpoint worker recording revocation before this checkpoint proceeds.
+        self._checkpoint_token_revoked.set()  # noqa: SLF001
+        # Let the real checkpoint guard raise SuspendExecution rather than raising it in the test.
+        original_checkpoint_method(self, operation_update)
+
+    def user_handler(event: Any, context: DurableContext) -> dict:
+        raise ValueError(LARGE_RESULT)
+
+    test_handler = durable_execution(user_handler, plugins=[plugin])
+    with patch.object(
+        ExecutionState, "create_checkpoint_sync", checkpoint_with_revoked_token
+    ):
+        result = test_handler(
+            _make_invocation_input(mock_client), _make_lambda_context()
+        )
+
+    assert len(attempted_updates) == 1
+    update = attempted_updates[0]
+    assert update is not None
+    assert update.operation_type is OperationType.EXECUTION
+    assert update.action is OperationAction.FAIL
+    assert update.error is not None
+    assert update.error.message == LARGE_RESULT
+    assert result == {"Status": InvocationStatus.PENDING.value}
+
+    mock_client.checkpoint.assert_not_called()
+
+    invocation_end_calls = [
+        call for call in plugin.calls if call.startswith("invocation_end:")
+    ]
+    assert invocation_end_calls == ["invocation_end:PENDING"]
+    assert not any(call.startswith("execution_end:") for call in plugin.calls)
+
+
 def test_durable_execution_checkpoint_error_in_background_thread():
     """Test durable_execution propagates CheckpointError from background thread.
 
