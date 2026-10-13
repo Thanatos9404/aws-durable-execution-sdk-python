@@ -2601,6 +2601,11 @@ HISTORY_EVENT_TYPES: dict[str, HistoryEventTypeConfig] = {
 }
 
 
+def _operation_error(error: ErrorObject | None) -> ErrorObject | None:
+    # History retains present Payload={}, while SDK state treats Error={} as absent.
+    return error if error is not None and error.to_dict() else None
+
+
 def events_to_operations(events: list[Event]) -> list[Operation]:
     """Convert a list of history events into operations.
 
@@ -2753,9 +2758,7 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
                 callback_details=CallbackDetails(
                     callback_id=callback_id,
                     result=result,
-                    # History preserves a present empty Payload object, while
-                    # CallbackDetails uses None for an empty wire error.
-                    error=error if error is not None and error.to_dict() else None,
+                    error=_operation_error(error),
                 ),
             )
 
@@ -2796,7 +2799,7 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
                 operation,
                 step_details=StepDetails(
                     result=result_val,
-                    error=error_val,
+                    error=_operation_error(error_val),
                     attempt=attempt,
                     next_attempt_timestamp=next_attempt_ts,
                 ),
@@ -2829,7 +2832,9 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
                     operation,
                     context_details=ContextDetails(
                         result=None,
-                        error=event.context_failed_details.error.payload,
+                        error=_operation_error(
+                            event.context_failed_details.error.payload
+                        ),
                     ),
                 )
 
@@ -2854,7 +2859,9 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
                     operation,
                     chained_invoke_details=ChainedInvokeDetails(
                         result=None,
-                        error=event.chained_invoke_failed_details.error.payload,
+                        error=_operation_error(
+                            event.chained_invoke_failed_details.error.payload
+                        ),
                     ),
                 )
 
