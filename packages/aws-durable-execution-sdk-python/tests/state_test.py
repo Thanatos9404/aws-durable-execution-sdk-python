@@ -2254,59 +2254,148 @@ def test_checkpoint_missing_token_on_empty_refresh_batch_is_revoked(caplog):
     assert len(warnings) == 1
 
 
-def test_checkpoint_token_revoked_abandons_still_queued_work():
-    """Work still queued when the token is revoked is abandoned, not resolved.
-
-    Its waiter is woken with SuspendExecution - not left blocking
-    (a threading.Event would then hang the invocation until the Lambda
-    timeout) and not resolved as if it had been sent and accepted, since it
-    was never sent at all.
-
-    op2 is enqueued from inside the checkpoint call so that it cannot join
-    op1's batch. That is what makes this exercise the queue drain in
-    _handle_revoked_checkpoint_token rather than the accepted-batch loop,
-    which the preceding test already covers.
-    """
-    mock_lambda_client = Mock(spec=LambdaClient)
-
+@pytest.mark.parametrize(
+    ("stop_reason", "expected_error"),
+    [
+        ("revoked", SuspendExecution),
+        ("completed", OrphanedChildException),
+        ("failed", BackgroundThreadError),
+    ],
+)
+def test_checkpoint_exit_settles_unsent_operations(
+    stop_reason: str, expected_error: type[BaseException]
+) -> None:
+    """Each exit settles unsent work without submitting another batch."""
+    client = Mock(spec=LambdaClient)
     state = ExecutionState(
         durable_execution_arn="test_arn",
         initial_checkpoint_token="token123",  # noqa: S106
         operations={},
-        service_client=mock_lambda_client,
+        service_client=client,
         plugin_executor=PluginExecutor(plugins=None),
-        batcher_config=CheckpointBatcherConfig(max_batch_time_seconds=0.05),
     )
-
-    sent_event = CompletionEvent()
+    sent_update = (
+        OperationUpdate.create_execution_succeed(payload="{}")
+        if stop_reason == "completed"
+        else _step_start("sent")
+    )
+    overflow_event = CompletionEvent()
     queued_event = CompletionEvent()
 
-    def revoke_and_queue_more(**_kwargs):
-        state._checkpoint_queue.put(QueuedOperation(_step_start("op2"), queued_event))
+    def checkpoint_and_queue_more(**_kwargs) -> CheckpointOutput:
+        # The submitted batch is already collected, so this work remains unsent.
+        with state._completion_lock:
+            state._overflow_queue.put(
+                QueuedOperation(_step_start("overflow"), overflow_event)
+            )
+            state._checkpoint_queue.put(
+                QueuedOperation(_step_start("queued"), queued_event)
+            )
+        if stop_reason == "failed":
+            raise RuntimeError("Checkpoint API error")
         return CheckpointOutput(
             checkpoint_token=None,
-            new_execution_state=CheckpointUpdatedExecutionState(
-                operations=[], next_marker=None
-            ),
+            new_execution_state=CheckpointUpdatedExecutionState(),
         )
 
-    mock_lambda_client.checkpoint.side_effect = revoke_and_queue_more
-    state._checkpoint_queue.put(QueuedOperation(_step_start("op1"), sent_event))
-
+    client.checkpoint.side_effect = checkpoint_and_queue_more
+    state._checkpoint_queue.put(QueuedOperation(sent_update))
     thread = threading.Thread(daemon=True, target=state.checkpoint_batches_forever)
     try:
         thread.start()
-        with pytest.raises(SuspendExecution):
-            sent_event.wait(timeout=2.0)
-        with pytest.raises(SuspendExecution):
-            queued_event.wait(timeout=2.0)
+        for event in (overflow_event, queued_event):
+            with pytest.raises(expected_error):
+                event.wait(timeout=2.0)
+
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
     finally:
         state.stop_checkpointing()
         thread.join(timeout=2.0)
 
-    assert mock_lambda_client.checkpoint.call_count == 1
-    sent_updates = mock_lambda_client.checkpoint.call_args.kwargs["updates"]
-    assert [update.operation_id for update in sent_updates] == ["op1"]
+    client.checkpoint.assert_called_once()
+    assert state._overflow_queue.empty()
+    assert state._checkpoint_queue.empty()
+
+
+@pytest.mark.parametrize("queue_name", ["_overflow_queue", "_checkpoint_queue"])
+def test_drain_unsent_operations_handles_empty_after_check(queue_name: str) -> None:
+    """A stale nonempty check must not prevent draining the other queue."""
+    state = _refresh_state()
+    pending_queue = getattr(state, queue_name)
+    other_queue = (
+        state._checkpoint_queue
+        if queue_name == "_overflow_queue"
+        else state._overflow_queue
+    )
+
+    operation = QueuedOperation(_step_start("unsent"))
+    other_queue.put(operation)
+
+    with state._completion_lock:
+        with patch.object(pending_queue, "empty", return_value=False) as empty:
+            assert state._drain_unsent_operations() == [operation]
+            empty.assert_called_once()
+
+    assert state._overflow_queue.empty()
+    assert state._checkpoint_queue.empty()
+
+
+def test_drain_unsent_operations_preserves_order_without_settling() -> None:
+    """Draining returns only operations; callers decide how to settle them."""
+    state = _refresh_state()
+    overflow = [
+        QueuedOperation(_step_start("overflow"), CompletionEvent()),
+        QueuedOperation(None),
+    ]
+    queued = [
+        QueuedOperation(None, CompletionEvent()),
+        QueuedOperation(_step_start("queued")),
+    ]
+
+    for operation in overflow:
+        state._overflow_queue.put(operation)
+    state._checkpoint_queue.put(_Signal.REFRESH_WAKE)
+    for operation in queued:
+        state._checkpoint_queue.put(operation)
+
+    with state._completion_lock:
+        drained = state._drain_unsent_operations()
+        assert state._drain_unsent_operations() == []
+
+    assert drained == overflow + queued
+    assert state._overflow_queue.empty()
+    assert state._checkpoint_queue.empty()
+    for operation in drained:
+        if operation.completion_event is not None:
+            assert not operation.completion_event.is_set()
+
+
+@pytest.mark.parametrize(
+    ("update_count", "refresh_count"),
+    [(2, 0), (0, 2), (2, 1)],
+    ids=["updates", "refreshes", "mixed"],
+)
+def test_revocation_warning_counts_only_accepted_updates(
+    caplog: pytest.LogCaptureFixture, update_count: int, refresh_count: int
+) -> None:
+    """The warning excludes refresh entries and work not submitted to the service."""
+    state = _refresh_state()
+    batch = [QueuedOperation(_step_start(f"op{i}")) for i in range(update_count)]
+    batch.extend(QueuedOperation(None) for _ in range(refresh_count))
+    state._overflow_queue.put(QueuedOperation(_step_start("unsent_overflow")))
+    state._checkpoint_queue.put(QueuedOperation(_step_start("unsent_queued")))
+
+    with caplog.at_level(logging.WARNING):
+        state._handle_revoked_checkpoint_token(batch)
+
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert f"{update_count} accepted update(s)" in message
+    assert state.durable_execution_arn in message
 
 
 def test_create_checkpoint_rejects_once_token_revoked():
@@ -2389,39 +2478,29 @@ def test_revoked_token_guard_runs_before_execution_completed_guard():
         state.schedule_refresh(earliest_check_time=0.0)
 
 
-def test_settle_after_execution_completed_orphans_pending_operations():
-    """When the execution completes, still-queued operations are settled as orphaned.
-
-    Their waiters must be released with OrphanedChildException rather than left
-    blocking or sent with the consumed token, and checkpointing must stop.
-    """
-    mock_lambda_client = Mock(spec=LambdaClient)
-    state = ExecutionState(
-        durable_execution_arn="test_arn",
-        initial_checkpoint_token="token123",  # noqa: S106
-        operations={},
-        service_client=mock_lambda_client,
-        plugin_executor=PluginExecutor(plugins=None),
-    )
-
+@pytest.mark.parametrize(
+    ("update", "expected_id"),
+    [(_step_start("orphan_op"), "orphan_op"), (None, "")],
+    ids=["operation", "empty-checkpoint"],
+)
+def test_settle_after_execution_completed_orphans_pending_operations(
+    update: OperationUpdate | None, expected_id: str
+) -> None:
+    """Completion preserves orphan IDs and handles entries without waiters."""
+    state = _refresh_state()
     completion_event = CompletionEvent()
-    state._checkpoint_queue.put(
-        QueuedOperation(
-            OperationUpdate(
-                operation_id="orphan_op",
-                operation_type=OperationType.STEP,
-                action=OperationAction.START,
-            ),
-            completion_event,
-        )
-    )
+    state._overflow_queue.put(QueuedOperation(_step_start("async_op")))
+    state._checkpoint_queue.put(QueuedOperation(update, completion_event))
 
     state._settle_after_execution_completed()
 
     assert state._execution_completed.is_set()
     assert state._checkpointing_stopped.is_set()
-    with pytest.raises(OrphanedChildException):
-        completion_event.wait()
+    with pytest.raises(OrphanedChildException) as exc_info:
+        completion_event.wait(timeout=2.0)
+    assert exc_info.value.operation_id == expected_id
+    assert state._overflow_queue.empty()
+    assert state._checkpoint_queue.empty()
 
 
 def _arm_execution_completed(state: ExecutionState) -> None:
@@ -3313,6 +3392,31 @@ def test_multiple_sync_operations_all_remain_blocked_on_error():
             pytest.fail(f"Event {i} should have raised BackgroundThreadError")
         except BackgroundThreadError:
             pass  # Expected
+
+
+def test_checkpoint_failure_preserves_cause_for_unsent_waiter() -> None:
+    """The queued waiter receives the service error despite an entry without a waiter."""
+    client = Mock(spec=LambdaClient)
+    state = _refresh_state(client)
+    completion_event = CompletionEvent()
+    service_error = RuntimeError("Checkpoint API error")
+
+    def fail_with_unsent_work(**_kwargs) -> CheckpointOutput:
+        with state._completion_lock:
+            state._overflow_queue.put(QueuedOperation(_step_start("async_op")))
+            state._checkpoint_queue.put(QueuedOperation(None, completion_event))
+        raise service_error
+
+    client.checkpoint.side_effect = fail_with_unsent_work
+    state._checkpoint_queue.put(QueuedOperation(_step_start("sent")))
+
+    state.checkpoint_batches_forever()
+
+    with pytest.raises(BackgroundThreadError) as exc_info:
+        completion_event.wait(timeout=2.0)
+    assert exc_info.value.source_exception is service_error
+    assert state._overflow_queue.empty()
+    assert state._checkpoint_queue.empty()
 
 
 def test_async_operations_not_affected_by_error_handling():

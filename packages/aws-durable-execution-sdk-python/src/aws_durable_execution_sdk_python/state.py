@@ -1124,24 +1124,9 @@ class ExecutionState:
                     # failure and raises, or has its operation drained here - never
                     # enqueued after the drain and left blocked.
                     with self._completion_lock:
-                        while not self._overflow_queue.empty():
-                            try:
-                                item = self._overflow_queue.get_nowait()
-                            except queue.Empty:
-                                break
-                            if item.completion_event:
-                                item.completion_event.set(bg_error)
-
-                        while not self._checkpoint_queue.empty():
-                            try:
-                                queued = self._checkpoint_queue.get_nowait()
-                            except queue.Empty:
-                                break
-                            if (
-                                isinstance(queued, QueuedOperation)
-                                and queued.completion_event
-                            ):
-                                queued.completion_event.set(bg_error)
+                        for queued_op in self._drain_unsent_operations():
+                            if queued_op.completion_event is not None:
+                                queued_op.completion_event.set(bg_error)
 
                         for refresh in self._drain_pending_refreshes():
                             refresh.completion_event.set(bg_error)
@@ -1167,6 +1152,19 @@ class ExecutionState:
 
         logger.debug("Background checkpoint processing stopped")
 
+    def _drain_unsent_operations(self) -> list[QueuedOperation]:
+        """Take queued operations, overflow first. The caller holds _completion_lock."""
+        unsent: list[QueuedOperation] = []
+        for pending_queue in (self._overflow_queue, self._checkpoint_queue):
+            while not pending_queue.empty():
+                try:
+                    item = pending_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, QueuedOperation):
+                    unsent.append(item)
+        return unsent
+
     def _settle_after_execution_completed(self) -> None:
         """Stop checkpointing and settle queued operations after the execution ends.
 
@@ -1187,16 +1185,7 @@ class ExecutionState:
             )
             for refresh in self._drain_pending_refreshes():
                 refresh.completion_event.set(orphaned)
-            unsent: list[QueuedOperation] = []
-            for pending_queue in (self._overflow_queue, self._checkpoint_queue):
-                while not pending_queue.empty():
-                    try:
-                        item = pending_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if isinstance(item, QueuedOperation):
-                        unsent.append(item)
-            for queued_op in unsent:
+            for queued_op in self._drain_unsent_operations():
                 if queued_op.completion_event is not None:
                     operation_id: str = (
                         queued_op.operation_update.operation_id
@@ -1219,10 +1208,11 @@ class ExecutionState:
         token as completion.
         """
         logger.warning(
-            "Checkpoint token revoked by the service mid-invocation. Ending "
+            "Checkpoint token revoked by the service mid-invocation for %s. Ending "
             "this invocation with PENDING; %d accepted update(s) in this batch "
             "remain durable, unsent work is abandoned.",
-            len(batch),
+            self.durable_execution_arn,
+            sum(1 for queued_op in batch if queued_op.operation_update is not None),
         )
         with self._completion_lock:
             self._checkpoint_token_revoked.set()
@@ -1236,16 +1226,8 @@ class ExecutionState:
             for refresh in self._drain_pending_refreshes():
                 refresh.completion_event.set(suspend)
 
-            unsent: list[QueuedOperation] = list(batch)
-            for pending_queue in (self._overflow_queue, self._checkpoint_queue):
-                while not pending_queue.empty():
-                    try:
-                        item = pending_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if isinstance(item, QueuedOperation):
-                        unsent.append(item)
-            for queued_op in unsent:
+            unsent = self._drain_unsent_operations()
+            for queued_op in [*batch, *unsent]:
                 if queued_op.completion_event is not None:
                     queued_op.completion_event.set(suspend)
 
