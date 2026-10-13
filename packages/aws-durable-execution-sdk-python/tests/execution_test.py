@@ -1221,12 +1221,7 @@ def test_durable_execution_returns_pending_when_token_revoked_on_checkpoint_erro
 
 
 def test_durable_execution_oversized_result_abandoned_after_revocation_returns_pending():
-    """An oversized result whose checkpoint is abandoned answers PENDING and returns promptly.
-
-    Before this fix this path never settled and the invocation ran until the
-    Lambda timeout; asserting checkpoint was never called also demonstrates
-    it returns without blocking on an attempted send.
-    """
+    """An oversized result returns PENDING without checkpointing after token revocation."""
     mock_client = Mock(spec=DurableServiceClient)
 
     @durable_execution
