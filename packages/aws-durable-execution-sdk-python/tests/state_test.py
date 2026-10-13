@@ -2451,6 +2451,33 @@ def test_schedule_refresh_rejects_once_token_revoked():
     assert state._checkpoint_queue.empty()
 
 
+def test_parent_done_guard_runs_before_revoked_token_guard() -> None:
+    """An orphaned operation is rejected before token revocation is checked."""
+    state = _refresh_state()
+    state._parent_done.add("op1")
+    state._checkpoint_token_revoked.set()
+
+    with pytest.raises(OrphanedChildException) as exc_info:
+        state.create_checkpoint(_step_start("op1"), is_sync=True)
+
+    assert exc_info.value.operation_id == "op1"
+    assert state._checkpoint_queue.empty()
+
+
+def test_checkpoint_failure_guard_runs_before_revoked_token_guard() -> None:
+    """A recorded background failure is raised before revocation is checked."""
+    state = _refresh_state()
+    failure = BackgroundThreadError("Checkpoint creation failed", RuntimeError("boom"))
+    state._checkpointing_failed.set(failure)
+    state._checkpoint_token_revoked.set()
+
+    with pytest.raises(BackgroundThreadError) as exc_info:
+        state.create_checkpoint(_step_start("op1"), is_sync=True)
+
+    assert exc_info.value is failure
+    assert state._checkpoint_queue.empty()
+
+
 def test_revoked_token_guard_runs_before_execution_completed_guard():
     """With both latches set, the revoked-token guard decides the exit.
 

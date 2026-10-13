@@ -393,8 +393,8 @@ class ExecutionState:
         self._refresh_wake_enqueued = False
         self._checkpointing_stopped: threading.Event = threading.Event()
         self._checkpointing_failed: CompletionEvent = CompletionEvent()
-        # Set once the service confirms the execution has completed (a checkpoint
-        # response with no token). No further checkpoint can succeed afterward.
+        # Set when a batch carrying the execution's terminal update receives
+        # a response with no token. No further checkpoint can succeed afterward.
         self._execution_completed: threading.Event = threading.Event()
         # Set once a checkpoint response omits the token without carrying the
         # execution's own terminal update: this invocation must stop
@@ -788,8 +788,8 @@ class ExecutionState:
         # (mirrors the parent-done check above). The _completion_lock block below
         # re-checks to close the race with a concurrent completion.
         #
-        # Checked for a revoked token before execution-completed:
-        # a revoked token takes priority over every other exit classification.
+        # Check token revocation before execution completion. Parent completion
+        # and background checkpoint failure have already been checked above.
         self._reject_if_checkpoint_token_revoked()
         self._reject_if_execution_completed(operation_update)
 
@@ -1002,15 +1002,20 @@ class ExecutionState:
         waiters. The checkpoint token is held locally and advanced after each
         successful batch.
 
-        The loop stops on any of three conditions: shutdown is signaled
-        (stop_checkpointing), the service reports the execution has completed (a
-        terminal batch whose response omits the token), or a batch fails. On
-        completion or failure the remaining queued operations are drained and their
-        waiters settled - with OrphanedChildException on completion, or the wrapped
-        BackgroundThreadError on failure - so no waiter blocks forever. On a plain
-        shutdown signal the queue is not drained: only non-essential asynchronous
-        checkpoints can remain, since the main thread blocks on every synchronous
-        one.
+        The loop stops when shutdown is signaled (stop_checkpointing), the
+        execution completes, the checkpoint token is revoked, or a batch fails.
+
+        A response without a token means completion only when the submitted
+        batch carries the execution's terminal update. Otherwise, it means
+        token revocation, and this invocation must report PENDING.
+
+        Completion, revocation, and failure drain remaining queued operations.
+        Their waiters receive OrphanedChildException on completion,
+        SuspendExecution on revocation, or BackgroundThreadError on failure.
+
+        On a plain shutdown signal the queue is not drained: only non-essential
+        asynchronous checkpoints can remain, since the main thread blocks on
+        every synchronous one.
         """
         # Keep checkpoint token as local variable in the loop
         current_checkpoint_token: str = self._current_checkpoint_token
@@ -1048,16 +1053,15 @@ class ExecutionState:
 
                     logger.debug("Checkpoint batch processed successfully")
 
-                    # A checkpoint response can omit the token for two different
-                    # reasons.
-                    #
-                    # If the accepted batch carries the execution's own terminal update (operation type
-                    # EXECUTION), the execution is already finished.
-                    #
-                    # Otherwise, the missing token means this invocation
-                    # must stop checkpointing and report PENDING instead.
-                    # This applies whether the batch carries other, non-terminal updates or none
-                    # at all (e.g. an all-refresh batch).
+                    # A checkpoint response can omit the token for several reasons.
+                    # 1. If the accepted batch carries the execution's own terminal update (operation type
+                    #   EXECUTION), the execution is already finished.
+                    # 2. The execution failed because a quota limit was exceeded. The invocation
+                    #   will harmlessly report PENDING and the execution will remain FAILED.
+                    # 3. Otherwise, the missing token means this invocation
+                    #   must stop checkpointing and report PENDING instead.
+                    #   This applies whether the batch carries other, non-terminal updates or none
+                    #   at all (e.g. an all-refresh batch).
                     execution_completed: bool = False
                     if output.checkpoint_token:
                         current_checkpoint_token = output.checkpoint_token
