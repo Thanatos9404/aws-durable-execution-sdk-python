@@ -1457,6 +1457,7 @@ class TestPluginExecutorOnChildContextEnd(unittest.TestCase):
             sub_type=OperationSubType.RUN_IN_CHILD_CONTEXT,
             parent_id="parent-1",
             name="book-trip",
+            operation_type=ServiceOperationType.CONTEXT,
         )
         before = datetime.datetime.now(datetime.UTC)
 
@@ -1492,6 +1493,7 @@ class TestPluginExecutorOnUserFunction(unittest.TestCase):
         identifier = OperationIdentifier(
             operation_id="step-1",
             sub_type=OperationSubType.STEP,
+            operation_type=ServiceOperationType.STEP,
         )
 
         with executor.run():
