@@ -1304,7 +1304,7 @@ def test_user_function_start_preserves_baggage_in_current_context():
 
 def test_user_function_end_restores_enclosing_context_on_failure():
     """Verify the enclosing context is restored even when the step fails."""
-    plugin, _ = _create_plugin()
+    plugin, exporter = _create_plugin()
     plugin.on_invocation_start(_invocation_start_info())
     enclosing_context = otel_context.get_current()
 
@@ -1317,6 +1317,12 @@ def test_user_function_end_restores_enclosing_context_on_failure():
     assert otel_context.get_current() == enclosing_context
     assert set(plugin._context_tokens) == {"__invocation_context__"}
     plugin.on_invocation_end(_invocation_end_info())
+    events = [
+        (span, event) for span in exporter.get_finished_spans() for event in span.events
+    ]
+    assert len(events) == 1
+    for span, event in events:
+        assert span.start_time <= event.timestamp <= span.end_time
 
 
 def test_user_function_end_restores_enclosing_context_across_multiple_steps():

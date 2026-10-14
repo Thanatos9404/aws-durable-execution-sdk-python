@@ -404,6 +404,11 @@ Without error details, `SUCCEEDED` is `OK` and other statuses, including
 returns successfully still has a successful invocation/workflow outcome; the
 failed operation retains its own error status on initial completion and replay.
 
+Exception events use the same normalized end timestamp as their operation or
+attempt span. This keeps events inside the exported span when a completion has
+no durable start time or arrives later than its backend end time; the existing
+view-specific span-boundary rules remain intact.
+
 When a concurrent branch's terminal completion arrives before replay has created
 its parent span, Invocation view retains that completion until the actual parent
 span is registered. The terminal segment is exported under that parent before

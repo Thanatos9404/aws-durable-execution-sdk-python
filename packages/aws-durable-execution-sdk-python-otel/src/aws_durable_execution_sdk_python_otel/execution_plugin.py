@@ -758,7 +758,8 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
         if info.error:
             span.set_status(StatusCode.ERROR, info.error.message or "")
             span.record_exception(
-                Exception(info.error.message or info.error.type or "Unknown error")
+                Exception(info.error.message or info.error.type or "Unknown error"),
+                timestamp=_to_otel_timestamp(end_time),
             )
         elif info.status in (
             OperationStatus.FAILED,
@@ -901,7 +902,8 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
                         (info.error.message or info.error.type)
                         if info.error
                         else "Unknown error"
-                    )
+                    ),
+                    timestamp=_to_otel_timestamp(end_time),
                 )
             else:
                 span.set_status(StatusCode.OK)

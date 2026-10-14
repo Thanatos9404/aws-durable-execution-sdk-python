@@ -512,7 +512,11 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         return span
 
     def _end_span(
-        self, operation_id: str | None, end_timestamp: datetime.datetime | None = None
+        self,
+        operation_id: str | None,
+        end_timestamp: datetime.datetime | None = None,
+        *,
+        exception: Exception | None = None,
     ):
         """End and unregister the active span for an operation ID.
 
@@ -521,6 +525,8 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
                 span.
             end_timestamp: Optional durable end timestamp to use as the span end
                 time. When omitted, OpenTelemetry uses the current time.
+            exception: Existing failure details to record at the same normalized
+                timestamp as the span end.
         """
         logger.debug("Ending OTel span: operation_id=%s", operation_id)
         with self._operation_spans_lock:
@@ -528,6 +534,8 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         if span:
             # the span is not going to be populated if it has the same end_time and start_time
             end_time = self._next_ordered_timestamp(end_timestamp)
+            if exception is not None:
+                span.record_exception(exception, timestamp=end_time)
             span.end(end_time=end_time)
             logger.debug("Ended OTel span: %s", span)
 
@@ -846,10 +854,11 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         else:
             span.set_attributes(self._extract_attributes(info))
 
+        exception: Exception | None = None
         if info.error:
             span.set_status(StatusCode.ERROR, info.error.message or "")
-            span.record_exception(
-                Exception(info.error.message or info.error.type or "Unknown error")
+            exception = Exception(
+                info.error.message or info.error.type or "Unknown error"
             )
         elif info.status in (
             OperationStatus.FAILED,
@@ -860,7 +869,7 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         elif info.status is OperationStatus.SUCCEEDED:
             span.set_status(StatusCode.OK)
 
-        self._end_span(info.operation_id, info.end_time)
+        self._end_span(info.operation_id, info.end_time, exception=exception)
 
     def on_user_function_start(self, info: UserFunctionStartInfo) -> None:
         """Called when a context or step operation starts user code.
@@ -972,16 +981,15 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
             and info.outcome is not UserFunctionOutcome.INCOMPLETE
         ):
             span.set_attributes(self._extract_attributes(info))
+            exception: Exception | None = None
             if info.outcome is UserFunctionOutcome.FAILED:
                 span.set_status(
                     StatusCode.ERROR, info.error.message if info.error else ""
                 )
-                span.record_exception(
-                    Exception(
-                        (info.error.message or info.error.type)
-                        if info.error
-                        else "Unknown error"
-                    )
+                exception = Exception(
+                    (info.error.message or info.error.type)
+                    if info.error
+                    else "Unknown error"
                 )
             else:
                 span.set_status(StatusCode.OK)
@@ -989,7 +997,7 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
             end_timestamp = info.end_time
             if end_timestamp is not None and end_timestamp == info.start_time:
                 end_timestamp += datetime.timedelta(microseconds=1)
-            self._end_span(span_key, end_timestamp)
+            self._end_span(span_key, end_timestamp, exception=exception)
         # Restore the enclosing context by releasing the scope this user
         # function attached. Code that runs after this operation (e.g. between
         # steps in a child context) correlates to its enclosing operation

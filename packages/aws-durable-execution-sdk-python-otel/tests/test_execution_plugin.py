@@ -1300,7 +1300,7 @@ def test_invocation_end_restores_context_from_before_invocation_start(status):
 )
 def test_step_scope_is_released_at_user_function_end(outcome):
     """Verify a finished step restores the context that enclosed it."""
-    plugin, _ = _create_plugin()
+    plugin, exporter = _create_plugin()
     plugin.on_invocation_start(_invocation_start_info())
     enclosing_context = otel_context.get_current()
 
@@ -1320,6 +1320,12 @@ def test_step_scope_is_released_at_user_function_end(outcome):
 
     plugin.on_invocation_end(_invocation_end_info())
     assert plugin._context_tokens == {}
+    events = [
+        (span, event) for span in exporter.get_finished_spans() for event in span.events
+    ]
+    assert len(events) == (1 if outcome is UserFunctionOutcome.FAILED else 0)
+    for span, event in events:
+        assert span.start_time <= event.timestamp <= span.end_time
 
 
 def test_user_function_start_preserves_baggage_in_current_context():
