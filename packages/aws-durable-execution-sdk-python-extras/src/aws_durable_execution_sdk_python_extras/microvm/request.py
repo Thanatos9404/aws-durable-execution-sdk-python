@@ -13,10 +13,11 @@ import http.client
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from aws_durable_execution_sdk_python.types import LoggerInterface
 
@@ -70,8 +71,9 @@ _T = TypeVar("_T")
 class MicrovmRequestRejectedError(Exception):
     """The endpoint rejected the job with a status that a retry cannot change.
 
-    Examples are 400, 404, and 413. The default step retry strategy does not
-    retry it.
+    Examples are 400, 404, and 413. A redirect, 3xx, is rejected too, because
+    the operation does not follow redirects. The default step retry strategy
+    does not retry it.
     """
 
     def __init__(self, message: str, status: int) -> None:
@@ -149,29 +151,47 @@ def call_before_deadline(
        returns. Its result is discarded.
 
     Raises:
-        Exception: The exception that the call raised, or the result of
+        BaseException: The exception that the call raised, or the result of
             ``on_expired``.
     """
     if hard_deadline is None:
         return call()
     budget = _call_budget(hard_deadline, float("inf"), on_expired)
+    finished, value = _run_with_limit(call, budget)
+    if not finished:
+        raise on_expired()
+    return cast("_T", value)
+
+
+def _run_with_limit(call: Callable[[], _T], seconds: float) -> tuple[bool, _T | None]:
+    """Run ``call`` in a daemon thread, and wait for it at most ``seconds``.
+
+    Returns:
+        ``(True, value)`` when the call returned in time. ``(False, None)``
+        when it did not. The thread then keeps running until the call ends,
+        and its result is discarded.
+
+    Raises:
+        BaseException: The exception that the call raised in time. It is
+            re-raised with its own type, a ``BaseException`` included.
+    """
     outcome: dict[str, Any] = {}
     done = threading.Event()
 
     def run() -> None:
         try:
             outcome["value"] = call()
-        except Exception as error:  # noqa: BLE001 - re-raised by the caller below
+        except BaseException as error:  # noqa: BLE001 - re-raised by the caller below
             outcome["error"] = error
         finally:
             done.set()
 
     threading.Thread(target=run, name="microvm-call", daemon=True).start()
-    if not done.wait(budget):
-        raise on_expired()
+    if not done.wait(seconds):
+        return False, None
     if "error" in outcome:
         raise outcome["error"]
-    return outcome["value"]
+    return True, outcome["value"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -203,7 +223,15 @@ def send_job(options: SendJobOptions) -> int:
     2. 401 or 403: create a new auth token and retry once. A second 401 or
        403 raises :class:`MicrovmRequestUnauthorizedError`, and the step
        retry strategy takes over.
-    3. Any other 4xx: raise :class:`MicrovmRequestRejectedError` at once.
+    3. Any other 4xx, or a 3xx: raise :class:`MicrovmRequestRejectedError`
+       at once.
+
+    The function does not follow a redirect. The JavaScript SDK's ``fetch``
+    follows one, and it differs in three ways. A 301, 302, or 303 turns the
+    POST into a GET without the job, and the GET's 2xx counts as accepted.
+    So the job never starts, and the operation waits until its timeout. A
+    307 or 308 to another host receives the auth token. So a redirect fails
+    the delivery at once, with the ``Location`` in the message.
 
     The delay starts at 250 milliseconds and doubles up to 4 seconds. The
     tier ends at the retry window, or 10 seconds before the invocation times
@@ -219,6 +247,11 @@ def send_job(options: SendJobOptions) -> int:
        that would start with less than 1 second before the reserve does not
        start. A Lambda timeout during the attempt would record no outcome,
        and the reserve prevents that.
+
+    Each request runs in a daemon thread, and the function waits for it at
+    most 10 seconds, or until the reserve. A socket timeout alone does not
+    bound a request: it applies to each socket operation, and each byte
+    received starts it again.
 
     The endpoint can accept a request before Lambda has sent the ``run``
     hook. So the body carries the MicroVM ID too.
@@ -277,7 +310,8 @@ def send_job(options: SendJobOptions) -> int:
         headers = {"content-type": "application/json", **token}
         if options.port != DEFAULT_MICROVM_PORT:
             headers[_PORT_HEADER] = str(options.port)
-        status, failure = _post(url, options.body, headers, timeout)
+        answer = _post_within(url, options.body, headers, timeout)
+        status = answer.status
 
         if status is not None and 200 <= status < 300:
             options.logger.info(
@@ -285,7 +319,7 @@ def send_job(options: SendJobOptions) -> int:
             )
             return status
         if status is None:
-            last_failure = failure
+            last_failure = answer.failure
         else:
             last_failure = f"HTTP {status}"
             if status in {401, 403}:
@@ -304,6 +338,14 @@ def send_job(options: SendJobOptions) -> int:
                     extra={"attempt": attempt, "status": status},
                 )
                 continue
+            if 300 <= status < 400:  # noqa: PLR2004
+                msg = (
+                    f"The MicroVM answered the job at {options.path} with HTTP "
+                    f"{status}, a redirect to {answer.location or 'no location'}. "
+                    "The operation does not follow redirects, so set the path "
+                    "that the route serves."
+                )
+                raise MicrovmRequestRejectedError(msg, status)
             if 400 <= status < 500 and status != 429:  # noqa: PLR2004
                 msg = (
                     f"The MicroVM rejected the job at {options.path} with HTTP {status}"
@@ -333,39 +375,84 @@ def _create_auth_token(options: SendJobOptions) -> Mapping[str, str]:
     return token
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not follow a redirect. urllib then raises ``HTTPError`` with the
+    3xx status."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
 # Proxy settings from the environment do not apply. The request goes to the
 # MicroVM endpoint directly, as the JavaScript SDK's fetch sends it.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
-def _post(
+@dataclass(frozen=True)
+class _Answer:
+    """The outcome of one POST."""
+
+    status: int | None
+    """The HTTP status. ``None`` when no answer arrived."""
+    failure: str = ""
+    """Why no answer arrived."""
+    location: str | None = None
+    """The ``Location`` header of a redirect."""
+
+
+def _post_within(
     url: str, body: bytes, headers: Mapping[str, str], timeout: float
-) -> tuple[int | None, str]:
-    """POST ``body``, and return the status, or ``None`` and the failure.
+) -> _Answer:
+    """POST ``body``, and wait for the answer at most ``timeout`` seconds.
+
+    The POST runs in a daemon thread, because a socket timeout alone does not
+    bound the whole request. A POST without an answer in time counts as one
+    failed attempt, like a refused connection.
+    """
+    finished, answer = _run_with_limit(
+        lambda: _post(url, body, headers, timeout), timeout
+    )
+    if not finished:
+        return _Answer(None, f"TimeoutError: no answer in {timeout:.1f} s")
+    return cast("_Answer", answer)
+
+
+def _post(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> _Answer:
+    """POST ``body``, and return the status, or the failure.
 
     The body of the response is not used. So the function reads no body, and
-    closes the response.
-
-    ``timeout`` applies to each socket operation: the connect, and each send
-    and receive. The endpoint answers at once, so it bounds the request.
+    closes the response. ``timeout`` is the socket timeout. It applies to
+    each socket operation, so :func:`_post_within` bounds the whole request.
     """
     request = urllib.request.Request(  # noqa: S310 - the URL is https or the endpoint's own
         url, data=body, headers=dict(headers), method="POST"
     )
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            return response.status, ""
+            return _Answer(response.status)
     except urllib.error.HTTPError as error:
+        location = error.headers.get("Location") if error.headers else None
         error.close()
-        return error.code, ""
+        return _Answer(error.code, location=location)
     except (OSError, http.client.HTTPException, ValueError) as error:
         # URLError, a refused connection, and a timeout are OSError. An
         # invalid response from the endpoint raises an HTTPException.
-        return None, f"{type(error).__name__}: {error}"
+        return _Answer(None, f"{type(error).__name__}: {error}")
+
+
+_PATH_SAFE = "/%!$&'()*+,;=:@-._~?#[]|^"
+"""The characters that stay as they are in the path.
+
+The WHATWG URL parser, which the JavaScript SDK's ``fetch`` uses,
+percent-encodes a space, ``"``, ``<``, ``>``, a backtick, ``{``, ``}``, the
+control characters, and every non-ASCII character in a path, as UTF-8.
+``urllib.parse.quote`` encodes those too, and leaves this set as it is. A
+``%`` stays, so a path that is already encoded is not encoded twice.
+"""
 
 
 def _endpoint_url(endpoint: str, path: str) -> str:
-    """Join the endpoint and the path.
+    """Join the endpoint and the percent-encoded path.
 
     ``RunMicrovm`` returns the endpoint as a host name without a scheme.
     """
@@ -374,4 +461,4 @@ def _endpoint_url(endpoint: str, path: str) -> str:
         if endpoint.startswith(("https://", "http://"))
         else (f"https://{endpoint}")
     )
-    return f"{base.rstrip('/')}{path}"
+    return f"{base.rstrip('/')}{urllib.parse.quote(path, safe=_PATH_SAFE)}"

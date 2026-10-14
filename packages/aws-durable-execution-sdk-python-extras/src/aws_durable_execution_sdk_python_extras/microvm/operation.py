@@ -208,7 +208,7 @@ def microvm(
             operation starts.
         MicrovmLaunchError: When ``RunMicrovm`` fails after all retries.
         MicrovmDeliveryError: When the HTTP delivery fails after all retries,
-            or the route answers a 4xx status such as 404.
+            or the route answers a 4xx status such as 404, or a redirect.
         MicrovmJobFailedError: When the MicroVM reports a failure, or sends a
             result that is not valid JSON.
         MicrovmTimeoutError: When no result or heartbeat arrives in time.

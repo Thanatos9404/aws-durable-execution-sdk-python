@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -226,7 +228,7 @@ def test_bounds_the_request_timeout_by_the_reserve(
 
     def post(url: str, body: bytes, headers: Any, timeout: float) -> Any:
         timeouts.append(timeout)
-        return 202, ""
+        return request._Answer(202)  # noqa: SLF001
 
     monkeypatch.setattr(request, "_post", post)
 
@@ -290,3 +292,108 @@ def test_stops_a_stalled_call_at_the_deadline() -> None:
 def test_returns_the_result_of_a_call_before_the_deadline() -> None:
     assert call_before_deadline(lambda: 7, time.monotonic() + 30, RuntimeError) == 7
     assert call_before_deadline(lambda: 8, None, RuntimeError) == 8
+
+
+@pytest.fixture
+def trickle_server() -> Iterator[str]:
+    """A server that answers one byte every 0.3 seconds.
+
+    Each byte starts the socket timeout again. So only a bound on the whole
+    request stops the POST in time.
+    """
+    listener = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def serve() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.recv(65536)
+            for byte in b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\n\r\n":
+                if stop.wait(0.3):
+                    return
+                try:
+                    connection.sendall(bytes([byte]))
+                except OSError:
+                    return
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    stop.set()
+    listener.close()
+
+
+def test_bounds_the_whole_request_and_not_each_socket_operation(
+    trickle_server: str,
+) -> None:
+    started = time.monotonic()
+
+    answer = request._post_within(  # noqa: SLF001
+        f"{trickle_server}/job", BODY, {}, 1.0
+    )
+
+    assert time.monotonic() - started < 2
+    assert answer.status is None
+    assert answer.failure == "TimeoutError: no answer in 1.0 s"
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_rejects_a_redirect_without_following_it(
+    fake_client: Any, fake_endpoint: Any, status: int
+) -> None:
+    endpoint = fake_endpoint([status])
+
+    with pytest.raises(MicrovmRequestRejectedError) as raised:
+        send_job(options(fake_client(), endpoint.url, []))
+
+    assert raised.value.status == status
+    assert str(raised.value) == (
+        f"The MicroVM answered the job at /durable-execution/v1/job with HTTP "
+        f"{status}, a redirect to /moved. The operation does not follow "
+        "redirects, so set the path that the route serves."
+    )
+    # A followed 301, 302, or 303 would arrive as a GET without the job.
+    assert [r["path"] for r in endpoint.requests] == ["/durable-execution/v1/job"]
+
+
+@pytest.mark.parametrize(
+    ("path", "sent"),
+    [
+        ("/clone build", "/clone%20build"),
+        ("/café", "/caf%C3%A9"),
+        ("/already%20encoded", "/already%20encoded"),
+        ("/a/b-c_d.e~f!$&'()*+,;=:@[]|^", "/a/b-c_d.e~f!$&'()*+,;=:@[]|^"),
+        ('/q"<>`{}', "/q%22%3C%3E%60%7B%7D"),
+    ],
+)
+def test_percent_encodes_the_path_as_fetch_does(
+    fake_client: Any, fake_endpoint: Any, path: str, sent: str
+) -> None:
+    endpoint = fake_endpoint()
+
+    send_job(options(fake_client(), endpoint.url, [], path=path))
+
+    assert endpoint.requests[0]["path"] == sent
+
+
+def test_ignores_proxy_settings_in_the_environment(
+    fake_client: Any, fake_endpoint: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Port 1 refuses every connection. A request that used the proxy would
+    # fail every attempt.
+    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:1")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, "")
+    endpoint = fake_endpoint()
+
+    assert send_job(options(fake_client(), endpoint.url, [])) == 202
+    assert len(endpoint.requests) == 1
+
+
+def test_passes_on_a_base_exception_of_the_call() -> None:
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        call_before_deadline(interrupted, time.monotonic() + 30, RuntimeError)

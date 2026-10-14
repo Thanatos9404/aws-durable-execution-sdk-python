@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import threading
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -941,3 +942,89 @@ def test_posts_the_job_once_across_invocations(
     assert len(endpoint.requests) == 1
     assert len(client.requests("create_microvm_auth_token")) == 1
     assert len(client.requests("run_microvm")) == 1
+
+
+def test_replay_keeps_the_run_hook_delivery_of_the_launch(
+    run: Any, fake_client: Any, fake_endpoint: Any
+) -> None:
+    # The launch uses the run hook. A deploy before the replay sets a path,
+    # which would select HTTP. The replay must follow the checkpoint.
+    endpoint = fake_endpoint()
+    client = fake_client(endpoint=endpoint.url)
+    first = config_with(client)
+    second = config_with(client, request=MicrovmRequestConfig(path="/job"))
+    invocations: list[int] = []
+    first_ended = threading.Event()
+
+    @durable_execution
+    def handler(event: Any, context: DurableContext) -> Any:
+        invocations.append(1)
+        config = first if len(invocations) == 1 else second
+        try:
+            return {"result": microvm(context, "build", job_input=event, config=config)}
+        except MicrovmError as error:
+            return {"error": type(error).__name__, "message": error.message}
+        finally:
+            first_ended.set()
+
+    def complete(runner: DurableFunctionTestRunner, callback_id: str) -> None:
+        # The first invocation suspends on the callback before it completes.
+        # So the result arrives in a replay.
+        assert first_ended.wait(WAIT)
+        runner.send_callback_success(callback_id, json.dumps("done").encode())
+
+    result = run(handler, {}, complete)
+
+    assert outcome(result) == {"result": "done"}
+    assert len(invocations) == 2
+    assert endpoint.requests == []
+    assert client.requests("create_microvm_auth_token") == []
+
+
+def test_replay_keeps_the_http_delivery_of_the_launch(
+    run: Any, fake_client: Any, fake_endpoint: Any
+) -> None:
+    # The launch uses HTTP, and the first request step attempt fails. A
+    # deploy before the replay removes the path, which would select the run
+    # hook for this small input. The replay must still deliver over HTTP.
+    endpoint = fake_endpoint([503, 503, 503])
+    client = fake_client(endpoint=endpoint.url)
+
+    def once(error: Exception, attempt: int) -> RetryDecision:
+        if attempt < 2 and default_microvm_retry_strategy(error, attempt).should_retry:
+            return RetryDecision.retry(Duration.from_seconds(1))
+        return RetryDecision.no_retry()
+
+    window = Duration.from_seconds(1)
+    first = config_with(
+        client,
+        retry_strategy=once,
+        request=MicrovmRequestConfig(path="/job", retry_window=window),
+    )
+    second = config_with(
+        client, retry_strategy=once, request=MicrovmRequestConfig(retry_window=window)
+    )
+    invocations: list[int] = []
+
+    @durable_execution
+    def handler(event: Any, context: DurableContext) -> Any:
+        invocations.append(1)
+        config = first if len(invocations) == 1 else second
+        try:
+            return {"result": microvm(context, "build", job_input=event, config=config)}
+        except MicrovmError as error:
+            return {"error": type(error).__name__, "message": error.message}
+
+    result = run(handler, {}, succeed_with("done"))
+
+    assert outcome(result) == {"result": "done"}
+    assert len(invocations) >= 2
+    # 3 requests in the first attempt, and 1 in the replay. The delivery
+    # comes from the checkpoint. The route comes from the current config, as
+    # in the JavaScript operation, which checkpoints no route either.
+    assert [r["path"] for r in endpoint.requests] == [
+        "/job",
+        "/job",
+        "/job",
+        "/durable-execution/v1/job",
+    ]

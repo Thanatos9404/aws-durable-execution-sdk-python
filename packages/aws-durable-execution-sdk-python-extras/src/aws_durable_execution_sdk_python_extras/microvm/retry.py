@@ -85,7 +85,8 @@ def default_microvm_retry_strategy(error: Exception, attempt: int) -> RetryDecis
        ``MicrovmRequestUnauthorizedError`` after a refused new token.
 
     ``MicrovmRequestRejectedError`` is not retried. The route rejected the
-    job with a 4xx status, and the same job gets the same answer.
+    job with a 4xx status or a redirect, and the same job gets the same
+    answer.
 
     Every other error fails the step at once. A ``ValidationException``, for
     example, fails the same way on every attempt.

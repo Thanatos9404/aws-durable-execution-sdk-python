@@ -86,7 +86,7 @@ Every MicroVM failure is a `MicrovmError`. Catch the base class for all of them,
 | Error | When |
 |---|---|
 | `MicrovmLaunchError` | `RunMicrovm` failed after all retries. When the last attempt timed out or lost its connection, the service may have created the MicroVM anyway, and it then runs the job. So running the job again after this error can run it twice. |
-| `MicrovmDeliveryError` | HTTP delivery failed after all retries, or the route answered a 4xx status such as 404. |
+| `MicrovmDeliveryError` | HTTP delivery failed after all retries, or the route answered a 4xx status such as 404, or a redirect. |
 | `MicrovmJobFailedError` | The job handler in the MicroVM failed, or the MicroVM sent a result that is not valid JSON. The message includes the error type that the MicroVM reported. |
 | `MicrovmTimeoutError` | No result arrived within `timeout`, or no heartbeat within `heartbeat_timeout`. A MicroVM that crashed ends this way. |
 
@@ -115,9 +115,11 @@ A step retry costs one durable operation and one more Lambda invocation. Most fa
 1. **Inside one step attempt.** The boto3 client retries throttling and server errors of `RunMicrovm`, `CreateMicrovmAuthToken`, and `TerminateMicrovm`. The request step retries the POST itself: connection errors, timeouts, 429, and 5xx, with a delay from 250 milliseconds to 4 seconds. It retries one 401 or 403 with a new auth token. The endpoint answers this way until the MicroVM's `run` hook returns. This tier ends after `retry_window`, or 10 seconds before the invocation times out, whichever comes first.
 2. **The step retry strategy.** When the first tier gives up, the step retries after a longer delay, outside the invocation. `default_microvm_retry_strategy` is the default, unless the config sets `retry_strategy`. It retries throttling, server errors, connection failures, timeouts, and the end of the first tier, for at most 5 attempts, with a delay of 2, 4, 8, and 16 seconds. Every other error, such as `ValidationException`, `AccessDeniedException`, or `InsufficientCapacityException`, fails the step at once.
 
-A route that answers another 4xx status fails the operation without a retry, with `MicrovmDeliveryError`.
+A route that answers another 4xx status fails the operation without a retry, with `MicrovmDeliveryError`. So does a redirect, 3xx. The operation does not follow redirects, and the message names the `Location`. Set the path that the route serves, for example with its trailing slash. The JavaScript operation follows redirects.
 
-The 10-second reserve keeps time for the step to record its failure. A Lambda timeout during a step attempt records no outcome for the attempt. So every call of the first tier must end before the reserve. boto3 cannot cancel a call, so a `CreateMicrovmAuthToken` call runs in a separate thread, and the step stops waiting for it at the reserve. The POST's socket timeout is at most the time left before the reserve.
+The path is percent-encoded as the JavaScript SDK's `fetch` encodes it. A space becomes `%20`, and a non-ASCII character becomes its UTF-8 bytes. A `%` stays, so an encoded path is sent as it is.
+
+The 10-second reserve keeps time for the step to record its failure. A Lambda timeout during a step attempt records no outcome for the attempt. So every call of the first tier must end before the reserve. boto3 cannot cancel a call, so a `CreateMicrovmAuthToken` call runs in a separate thread, and the step stops waiting for it at the reserve. Each POST runs in a separate thread too, and the step waits for it at most 10 seconds, or until the reserve. A socket timeout alone would not bound it, because each byte received starts the socket timeout again.
 
 ### Defaults and limits
 

@@ -117,7 +117,7 @@ class FakeEndpoint:
 
     It records each request, and answers from ``statuses`` in order. After
     the list ends, it answers 202. A status of ``None`` closes the connection
-    without an answer.
+    without an answer. A redirect status gets ``Location: /moved``.
     """
 
     def __init__(self, statuses: list[int | None] | None = None) -> None:
@@ -127,6 +127,21 @@ class FakeEndpoint:
         endpoint = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - the http.server name
+                # A followed 301, 302, or 303 arrives as a GET.
+                with endpoint._lock:
+                    endpoint.requests.append(
+                        {
+                            "method": "GET",
+                            "path": self.path,
+                            "headers": {},
+                            "body": None,
+                        }
+                    )
+                self.send_response(200)
+                self.send_header("content-length", "0")
+                self.end_headers()
+
             def do_POST(self) -> None:  # noqa: N802 - the http.server name
                 length = int(self.headers.get("content-length", "0"))
                 body = self.rfile.read(length)
@@ -144,6 +159,8 @@ class FakeEndpoint:
                     self.connection.shutdown(socket.SHUT_RDWR)
                     return
                 self.send_response(status)
+                if 300 <= status < 400:  # noqa: PLR2004
+                    self.send_header("location", "/moved")
                 self.send_header("content-length", "0")
                 self.end_headers()
 
