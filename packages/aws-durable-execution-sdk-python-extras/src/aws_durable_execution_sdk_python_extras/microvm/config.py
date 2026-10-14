@@ -106,10 +106,13 @@ class MicrovmConfig:
     receives the value in the job document.
 
     The heartbeat timeout starts when the callback is created, before the
-    launch. So it must cover the launch, with its retries, and the boot. A
-    throttled launch can take several minutes. A heartbeat timeout that is
-    shorter fails the operation with ``MicrovmTimeoutError`` before the
-    MicroVM can send its first heartbeat.
+    launch. The worker sends its first heartbeat when the job arrives. So the
+    first period must cover the launch, the boot, and, for HTTP delivery, the
+    request step, each with its retries. A throttled launch can take several
+    minutes, and the request step retries for up to ``request.retry_window``
+    in each attempt. A heartbeat timeout that is shorter fails the operation
+    with ``MicrovmTimeoutError`` before the MicroVM can send its first
+    heartbeat.
     """
 
     image_version: str | None = None

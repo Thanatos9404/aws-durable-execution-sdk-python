@@ -909,3 +909,35 @@ def test_terminates_only_after_the_wait_for_the_result_ends(
 
     assert outcome(result) == "MicrovmTimeoutError"
     assert terminated_in == [2]
+
+
+def test_posts_the_job_once_across_invocations(
+    run: Any, fake_client: Any, fake_endpoint: Any
+) -> None:
+    # The first invocation suspends on the callback, and the replay times it
+    # out. The request step is checkpointed, so the replay sends no second
+    # POST.
+    endpoint = fake_endpoint()
+    client = fake_client(endpoint=endpoint.url)
+    invocations: list[int] = []
+    config = config_with(
+        client,
+        timeout=Duration.from_seconds(2),
+        request=MicrovmRequestConfig(path="/job"),
+    )
+
+    @durable_execution
+    def handler(event: Any, context: DurableContext) -> Any:
+        invocations.append(1)
+        try:
+            return microvm(context, "build", job_input=event, config=config)
+        except MicrovmError as error:
+            return type(error).__name__
+
+    result = run(handler, {})
+
+    assert outcome(result) == "MicrovmTimeoutError"
+    assert len(invocations) >= 2
+    assert len(endpoint.requests) == 1
+    assert len(client.requests("create_microvm_auth_token")) == 1
+    assert len(client.requests("run_microvm")) == 1
