@@ -939,7 +939,14 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
             span.set_status(StatusCode.OK)
 
         self._note_parent_end(info.parent_id, end_time)
-        popped = self._pop_span(info.operation_id)
+        with self._lock:
+            popped = self._operation_spans.pop(info.operation_id, None)
+            if popped is not None and info.operation_type is OperationType.CONTEXT:
+                # A callback created by this child can finish in a later root
+                # checkpoint. Retain only its actual parent context until End.
+                self._operation_spans[info.operation_id] = DurableParentSpan(
+                    popped.get_span_context(), start_time=start_time
+                )
         if popped is not None:
             popped.end(end_time=_to_otel_timestamp(end_time))
 

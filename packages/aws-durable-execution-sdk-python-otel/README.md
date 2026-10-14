@@ -449,8 +449,12 @@ instance resources. SDK-owned worker tasks capture the selected invocation
 Context; Start/End hooks and token reset retain their existing owner and order.
 
 Terminal input updates can be observed even when replay skips their completed
-child context. When the input contains that checkpointed parent's terminal
-metadata, the views reference its original logical span identity without
+child context. A child that finishes during the current invocation retains its
+actual parent context for later descendant checkpoint deliveries. In Invocation
+view, input completions first wait for the handler to create any current replay
+segment, including `ReplayChildren` for large results. At invocation End, only
+completions still lacking that segment use a known completed input parent. When the input contains that checkpointed parent's
+terminal metadata, the views reference its original logical span identity without
 re-exporting the parent. Missing or nonterminal parents are deferred until their
 actual span is available; unresolved parentage is reported after cleanup instead
 of inventing a root parent. Draining this private queue does not call the public

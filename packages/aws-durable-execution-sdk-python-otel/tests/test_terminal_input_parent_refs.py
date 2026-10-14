@@ -179,3 +179,128 @@ def test_unavailable_parent_is_reported_after_context_cleanup(view):
         contextvars.Context().run(invoke)
     finally:
         provider.shutdown()
+
+
+def test_completed_context_remains_parent_for_late_execution_checkpoint():
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    plugin = ExecutionOtelPlugin(
+        OtelPluginConfig(
+            tracer_provider=provider,
+            context_extractor=lambda _: None,
+            enrich_logger=False,
+        )
+    )
+    now = datetime.now(UTC)
+    invocation = dict(
+        request_id="request",
+        execution_arn="execution/late-parent",
+        is_first_invocation=True,
+        execution_start_time=now,
+    )
+    parent_fields = dict(
+        operation_id="parent",
+        operation_type=OperationType.CONTEXT,
+        name="parent",
+        parent_id=None,
+        status=OperationStatus.STARTED,
+        end_time=None,
+    )
+    before = otel_context.get_current()
+    try:
+        plugin.on_invocation_start(InvocationStartInfo(**invocation))
+        plugin.on_operation_start(_info(OperationStartInfo, now, **parent_fields))
+        start = _info(UserFunctionStartInfo, now, **parent_fields)
+        plugin.on_user_function_start(start)
+        plugin.on_operation_start(
+            _info(
+                OperationStartInfo, now, status=OperationStatus.STARTED, end_time=None
+            )
+        )
+        plugin.on_user_function_end(UserFunctionEndInfo.from_start_info(start, None))
+        plugin.on_operation_end(
+            _info(
+                OperationEndInfo,
+                now,
+                operation_id="parent",
+                operation_type=OperationType.CONTEXT,
+                name="parent",
+                parent_id=None,
+            )
+        )
+        parents = [s for s in exporter.get_finished_spans() if s.name == "parent"]
+        assert len(parents) == 1
+        plugin.on_operation_end(_info(OperationEndInfo, now))
+        children = [s for s in exporter.get_finished_spans() if s.name == "b"]
+        assert (
+            len(children) == 1
+            and children[0].parent.span_id == parents[0].context.span_id
+        )
+        assert (
+            len([s for s in exporter.get_finished_spans() if s.name == "parent"]) == 1
+        )
+        plugin.on_invocation_end(
+            InvocationEndInfo(**invocation, status=InvocationStatus.SUCCEEDED)
+        )
+        assert plugin._operation_spans == {} and otel_context.get_current() == before
+    finally:
+        provider.shutdown()
+
+
+def test_completed_input_parent_waits_for_current_invocation_segment():
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    plugin = InvocationOtelPlugin(
+        OtelPluginConfig(
+            tracer_provider=provider,
+            context_extractor=lambda _: None,
+            enrich_logger=False,
+        )
+    )
+    now = datetime.now(UTC)
+    invocation = dict(
+        request_id="request",
+        execution_arn="execution/replayed-parent",
+        is_first_invocation=False,
+        execution_start_time=now,
+    )
+    parent_fields = dict(
+        operation_id="parent",
+        operation_type=OperationType.CONTEXT,
+        name="parent",
+        parent_id=None,
+        is_replayed=True,
+    )
+    b = _info(OperationInfo, now)
+    parent = _info(OperationInfo, now, **parent_fields)
+    before = otel_context.get_current()
+    try:
+        plugin.on_invocation_start(
+            InvocationStartInfo(
+                **invocation,
+                operations={"parent": parent, "b": b},
+                updated_operations={"b": b},
+            )
+        )
+        plugin.on_operation_end(_info(OperationEndInfo, now))
+        assert not [s for s in exporter.get_finished_spans() if s.name == "b"]
+        start = _info(
+            UserFunctionStartInfo, now, **parent_fields, is_replay_children=True
+        )
+        plugin.on_user_function_start(start)
+        actual_parent = plugin._get_span("parent").get_span_context()
+        children = [s for s in exporter.get_finished_spans() if s.name == "b"]
+        assert (
+            len(children) == 1 and children[0].parent.span_id == actual_parent.span_id
+        )
+        plugin.on_user_function_end(UserFunctionEndInfo.from_start_info(start, None))
+        plugin.on_operation_end(_info(OperationEndInfo, now, **parent_fields))
+        plugin.on_invocation_end(
+            InvocationEndInfo(**invocation, status=InvocationStatus.PENDING)
+        )
+        assert plugin._operation_spans == {} and otel_context.get_current() == before
+        assert plugin._state.get().input_parent_refs == {}
+    finally:
+        provider.shutdown()

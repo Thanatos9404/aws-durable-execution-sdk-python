@@ -757,15 +757,11 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
             name="Invocation",
             attributes=self._extract_attributes(info),
         )
-        # A cached completed child has no new segment. Keep its checkpointed
-        # logical parent identity, without creating or re-exporting a parent.
-        for parent in completed_input_parents(info):
-            parent_context = self._operation_link_context(parent.operation_id)
-            if parent_context is not None:
-                with self._operation_spans_lock:
-                    self._operation_spans[parent.operation_id] = DurableParentSpan(
-                        parent_context, start_time=parent.start_time
-                    )
+        # A terminal checkpoint can still use ReplayChildren. Give the handler
+        # a chance to register its current segment before using an old identity.
+        self._state.get().input_parent_refs = {
+            parent.operation_id: parent for parent in completed_input_parents(info)
+        }
 
         # Start and End share the invocation worker and token-owning Context.
         # Retain a valid same-trace ambient parent; otherwise bind this invocation.
@@ -857,6 +853,24 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         if not self._tracing_enabled:
             self._reset_state()
             return
+
+        # Actual replay parent segments drain their children on registration.
+        # Only now can an input completion with no such segment use the known
+        # completed checkpoint's identity. Missing/nonterminal parents still fail.
+        pending_ends = []
+        with self._operation_spans_lock:
+            for parent_id in tuple(self._pending_operation_ends):
+                parent = self._state.get().input_parent_refs.get(parent_id)
+                if parent is None or parent_id in self._operation_spans:
+                    continue
+                parent_context = self._operation_link_context(parent_id)
+                if parent_context is not None:
+                    self._operation_spans[parent_id] = DurableParentSpan(
+                        parent_context, start_time=parent.start_time
+                    )
+                    pending_ends.extend(self._pending_operation_ends.pop(parent_id))
+        for pending_end in pending_ends:
+            self._render_operation_end(pending_end)
 
         # User work and checkpoint cleanup have finished. Release Start bindings
         # in the Context that created their tokens before closing the spans.

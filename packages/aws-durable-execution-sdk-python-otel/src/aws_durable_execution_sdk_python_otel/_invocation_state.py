@@ -65,6 +65,7 @@ class ExecutionState(_InvocationState[str]):
 @dataclass
 class InvocationState(_InvocationState[str | None]):
     span_time_floor_ns: int | None = None
+    input_parent_refs: dict[str, OperationInfo] = field(default_factory=dict)
     pending_operation_ends: dict[str, list[OperationEndInfo]] = field(
         default_factory=dict
     )
