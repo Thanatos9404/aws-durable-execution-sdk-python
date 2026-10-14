@@ -486,6 +486,35 @@ context onto every emitted log record using these attributes:
 These attributes are only set when a valid span context is active, so any log
 formatter or schema must treat the fields as optional.
 
+## Chained-invoke propagation
+
+Both views supply the synchronous `provide_propagation_metadata` hook with
+SDK-owned types. It encodes canonical X-Ray `Root`, the calling operation's
+`Parent`, and resolved `Sampled=1` or `Sampled=0`, without creating an extra span.
+An existing operation's actual span ID is used; before span creation, its stable
+ID is derived from the execution ARN and operation ID. Unrelated ambient spans
+cannot replace execution ownership. Inactive/mismatched executions contribute
+nothing. Tracer, provider and resource ownership remain unchanged.
+
+The core now calls the collector only for a new invoke START and persists the
+contribution in flat `ChainedInvokeOptions.XAmznTraceId`. Pending and terminal
+replay do not recollect metadata; an uncommitted START can be retried. Separate
+invokes carry separate operation parents. Public invoke tests cover both views,
+sampled/unsampled context, parallel branches, preserved tenant/payload and replay.
+
+For [#751](https://github.com/aws/aws-durable-execution-sdk-python/issues/751),
+deployed backend delivery and topology still require validation. The core requires
+boto3 1.43.114 or newer, which depends on a botocore model containing the optional
+field. The normal request tests use the published serializer and parameter
+validation. Python has no distributed-map
+model/START path; existing map/parallel APIs are CONTEXT operations.
+
+On older supported cores without the propagation contract, plugin loading and
+existing tracing continue, and the optional hook contributes no metadata. The
+new capability requires the coordinated core and its boto3 minimum. The core/OTel
+package floor and provider API version are unchanged; the published model alone
+does not establish deployed downstream topology.
+
 ## Verification
 
 After deploying your function with the plugin configured:

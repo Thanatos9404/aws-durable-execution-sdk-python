@@ -105,6 +105,16 @@ functions in the templates.
 
 ## External completion and status coverage
 
+Case 11 uses the existing public chained invoke and unchanged echo target, then
+waits on `otel-invoke-replay-barrier` before returning the original invoke result.
+The driver completes that callback with JSON `"resume"` after its caller
+invocation has completed PENDING. The caller has three phases
+(PENDING/PENDING/SUCCEEDED), one invoke START/success and one target execution;
+the final replay consumes the saved invoke result. This caller must be paired
+with the Shared catalog that expects the barrier and verifies actual cross-
+execution parent ancestry. Local handler tests do not establish real-service
+Root/Parent/Sampled propagation, and no missing infrastructure span is fabricated.
+
 The local testing library includes callback success, failure and timeout in the
 next invocation's `UpdatedOperationIds`. The core delivers each terminal update
 notification once per invocation, including when a resumed operation and a later
