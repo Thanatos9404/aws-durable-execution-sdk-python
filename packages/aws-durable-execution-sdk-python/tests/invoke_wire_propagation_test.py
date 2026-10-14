@@ -1,7 +1,7 @@
 """Owned-model round trips and the real installed Lambda wire serializer.
 
-The header-bearing client tests intentionally fail until botocore publishes
-ChainedInvokeOptions.XAmznTraceId. They are not skipped or given preview models.
+The header-bearing client tests use the published Lambda model required by
+boto3 1.43.114. They are not skipped or given preview models.
 """
 
 from __future__ import annotations

@@ -441,16 +441,17 @@ invokes carry separate operation parents. Public invoke tests cover both views,
 sampled/unsampled context, parallel branches, preserved tenant/payload and replay.
 
 This PR stays draft for [#751](https://github.com/aws/aws-durable-execution-sdk-python/issues/751)
-until the public generated model and backend support are available. The normal
-botocore request tests intentionally expose the missing field; they do not bypass
-the serializer or hide the dependency failure. Python has no distributed-map
+until deployed backend delivery and topology are validated. The core requires
+boto3 1.43.114 or newer, which depends on a botocore model containing the optional
+field. The normal request tests use the published serializer and parameter
+validation. Python has no distributed-map
 model/START path; existing map/parallel APIs are CONTEXT operations.
 
 On older supported cores without the propagation contract, plugin loading and
 existing tracing continue, and the optional hook contributes no metadata. The
-new capability requires the coordinated core. Dependency floors and provider API
-version are unchanged; deployed downstream topology still needs validation after
-model/backend publication.
+new capability requires the coordinated core and its boto3 minimum. The core/OTel
+package floor and provider API version are unchanged; the published model alone
+does not establish deployed downstream topology.
 
 ## Verification
 

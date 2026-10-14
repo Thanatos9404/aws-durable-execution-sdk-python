@@ -168,11 +168,12 @@ existing behavior. Replaying a checkpointed START, pending operation or terminal
 result does not call the hook. If a START was never committed, a later attempt
 can collect again; the callback is not exactly-once.
 
-This remains draft pending public Lambda model and backend publication. The SDK
-model and START path are implemented; the real botocore serialization tests
-intentionally fail while `ChainedInvokeOptions.XAmznTraceId` is absent from the
-installed model. No field removal, validation bypass or model-capability fallback
-is used to make those checks pass. Python has no `DistributedMapOptions` wrapper
+This requires boto3 1.43.114 or newer, whose botocore dependency includes the
+published optional `ChainedInvokeOptions.XAmznTraceId` string field. The real
+botocore tests exercise its parameter validation and wire serialization without
+field removal, validation bypass or a model-capability fallback. This remains
+draft until deployed backend delivery and downstream topology are validated.
+Python has no `DistributedMapOptions` wrapper
 or distributed-map START API: its existing map/parallel operations use CONTEXT.
 The design's corresponding distributed-map field awaits that future modeled path.
 
