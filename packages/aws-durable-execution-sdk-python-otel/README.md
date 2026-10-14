@@ -441,6 +441,14 @@ raised retroactively into the completed invocation.
 
 ### Invocation context isolation
 
+Completion metadata can be redelivered after a failed invocation or checkpoint
+transport attempt that has no successful response acknowledgment. There is no
+exporter acknowledgment in durable state, so this does not promise exactly-once
+telemetry across failed/redelivered invocations. Successful replay preserves
+checkpointed work; this limit is not a claim that already-checkpointed step
+bodies run again. The plugin does not use a global exported-operation cache that
+could discard a first delivery after a failed attempt.
+
 With core 2.1+, invocation hooks and the handler run on one worker in an
 invocation-local Context initialized from the host's bindings. Successful Start
 bindings are visible to later hooks, the handler and resource cleanup. The host's
