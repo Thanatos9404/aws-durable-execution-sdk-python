@@ -424,7 +424,7 @@ context onto every emitted log record using these attributes:
 These attributes are only set when a valid span context is active, so any log
 formatter or schema must treat the fields as optional.
 
-## Draft chained-invoke propagation
+## Chained-invoke propagation
 
 Both views supply the synchronous `provide_propagation_metadata` hook with
 SDK-owned types. It encodes canonical X-Ray `Root`, the calling operation's
@@ -440,8 +440,8 @@ replay do not recollect metadata; an uncommitted START can be retried. Separate
 invokes carry separate operation parents. Public invoke tests cover both views,
 sampled/unsampled context, parallel branches, preserved tenant/payload and replay.
 
-This PR stays draft for [#751](https://github.com/aws/aws-durable-execution-sdk-python/issues/751)
-until deployed backend delivery and topology are validated. The core requires
+For [#751](https://github.com/aws/aws-durable-execution-sdk-python/issues/751),
+deployed backend delivery and topology still require validation. The core requires
 boto3 1.43.114 or newer, which depends on a botocore model containing the optional
 field. The normal request tests use the published serializer and parameter
 validation. Python has no distributed-map

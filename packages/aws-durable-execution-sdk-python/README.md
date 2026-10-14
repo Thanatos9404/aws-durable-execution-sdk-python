@@ -145,7 +145,7 @@ core alone with OTel 1.0 isolates worker bindings, but does not add the newer
 Invocation-view fallback to that older plugin; upgrade both packages for it.
 Provider API version 1 and the independent registration API are unchanged.
 
-### Draft chained-invoke propagation
+### Chained-invoke propagation
 
 A new invoke START collects synchronous plugin metadata after resolving its
 operation and target identity, before checkpointing. The SDK writes a non-blank
@@ -171,8 +171,8 @@ can collect again; the callback is not exactly-once.
 This requires boto3 1.43.114 or newer, whose botocore dependency includes the
 published optional `ChainedInvokeOptions.XAmznTraceId` string field. The real
 botocore tests exercise its parameter validation and wire serialization without
-field removal, validation bypass or a model-capability fallback. This remains
-draft until deployed backend delivery and downstream topology are validated.
+field removal, validation bypass or a model-capability fallback. Deployed backend
+delivery and downstream topology still require separate validation.
 Python has no `DistributedMapOptions` wrapper
 or distributed-map START API: its existing map/parallel operations use CONTEXT.
 The design's corresponding distributed-map field awaits that future modeled path.
