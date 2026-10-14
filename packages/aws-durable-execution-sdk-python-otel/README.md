@@ -416,6 +416,27 @@ control returns to the branch's user code. No ancestor is invented and SDK
 completion delivery is unchanged. If the parent never becomes active, normal
 invocation cleanup and flushing still run before the missing parent is reported.
 
+### Invocation flushing
+
+After span and ContextVar cleanup, the plugins wait up to the OpenTelemetry
+provider's existing 30-second default budget for `force_flush()`. Only provider
+I/O runs on a background daemon worker; invocation Start/End hooks and token
+cleanup stay on their original worker and Context. The I/O receives a snapshot
+of that post-cleanup Context.
+
+There is at most one outstanding provider flush in the process and no pending
+queue. A timeout does not cancel the exporter or free that slot. Later requests
+skip flushing with a warning until the earlier call actually finishes, including
+requests using another provider. A failed or skipped flush is not an export
+acknowledgment, and late exports may continue. Applications still own exporter
+transport timeouts and provider shutdown. This bound does not cover synchronous
+span-processor `on_end` work that runs before flushing.
+
+Ordinary provider exceptions that finish within the budget retain the existing
+plugin exception isolation; fatal exceptions are propagated on the lifecycle
+owner. Exceptions after the caller has stopped waiting are logged and cannot be
+raised retroactively into the completed invocation.
+
 ### Invocation context isolation
 
 With core 2.1+, invocation hooks and the handler run on one worker in an

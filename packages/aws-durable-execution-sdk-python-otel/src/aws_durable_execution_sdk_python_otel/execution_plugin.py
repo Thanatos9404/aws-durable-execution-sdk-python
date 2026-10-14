@@ -70,6 +70,7 @@ from aws_durable_execution_sdk_python_otel.context_extractors import (
     _ensure_extracted_context,
     xray_context_extractor,
 )
+from aws_durable_execution_sdk_python_otel._flush import flush_provider
 from aws_durable_execution_sdk_python_otel.deterministic_id_generator import (
     DeterministicIdGenerator,
     derive_workflow_span_id,
@@ -666,7 +667,7 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
 
         if hasattr(self._provider, "force_flush"):
             try:
-                self._provider.force_flush()
+                flush_provider(self._provider.force_flush)
             except Exception:  # noqa: BLE001
                 logger.exception("force_flush failed at invocation end")
 
