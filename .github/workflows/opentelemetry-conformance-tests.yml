@@ -45,7 +45,7 @@ on:
       conformance_test_ref:
         description: Conformance test commit SHA or branch name
         required: true
-        default: a1ba6a96298a252eb85bef43866ef1d3ccab66be
+        default: fb69b21ccc8805a74271554403707f5e649e5aae
         type: string
 
 # Backend stacks are shared across PRs. Queue whole runs so reusable
@@ -73,7 +73,7 @@ jobs:
       resource_prefix: p
       sdk_repository: aws/aws-durable-execution-sdk-python
       sdk_ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      conformance_test_ref: ${{ inputs.conformance_test_ref || 'a1ba6a96298a252eb85bef43866ef1d3ccab66be' }}
+      conformance_test_ref: ${{ inputs.conformance_test_ref || 'fb69b21ccc8805a74271554403707f5e649e5aae' }}
       # Check the SDK out so the handlers and templates below are on disk. The handlers
       # themselves are installed from sdk_ref by src/requirements.txt during the SAM build.
       checkout_sdk: true

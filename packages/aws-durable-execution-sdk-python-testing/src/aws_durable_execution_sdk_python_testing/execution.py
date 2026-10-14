@@ -434,16 +434,11 @@ class Execution:
         )
 
     def mark_state_delivered(self) -> None:
-        """Reset the list of changed operations once an invocation's input
-        carries them.
+        """Explicitly clear all pending operation IDs after their delivery.
 
-        The service reports, on each invocation, the operations that
-        changed after the last state the handler observed. The runner
-        delivers state in the invocation input. So the list is reset when
-        that input is built, not when the invocation completes: an
-        operation that completes while the handler is still running is
-        reported on the next invocation unless a checkpoint response has
-        already delivered it through ``advance_handler_seen``.
+        The live executor uses versioned ``advance_handler_seen`` acknowledgments
+        so failed invocations retain their input updates and concurrent changes
+        newer than the acknowledged input snapshot remain pending.
         """
         self.updated_operation_ids = []
 
@@ -887,8 +882,8 @@ class OperationPaginatorState:
         smaller or equal values are ignored."""
         if seq > self.execution.handler_seen_seq:
             self.execution.handler_seen_seq = seq
-            # A checkpoint has delivered these updates to the running handler.
-            # Retain only changes newer than that response for the next input.
+            # A checkpoint response or completed invocation delivered this state.
+            # Retain changes newer than that acknowledged snapshot.
             self.execution.updated_operation_ids = [
                 operation_id
                 for operation_id in self.execution.updated_operation_ids
