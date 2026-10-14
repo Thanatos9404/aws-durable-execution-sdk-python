@@ -79,7 +79,7 @@ def test_operation_status_and_exception(
     with_error: bool,
     started_here: bool,
 ) -> None:
-    """A delivered terminal hook must not label an unsuccessful operation OK."""
+    """Explicit failures are errors even when diagnostic details are absent."""
     plugin, exporter = instrumented_view
     invocation: dict[str, Any] = dict(
         request_id="first",
@@ -123,6 +123,8 @@ def test_operation_status_and_exception(
     expected = (
         StatusCode.ERROR
         if with_error
+        or status
+        in (OperationStatus.FAILED, OperationStatus.TIMED_OUT, OperationStatus.STOPPED)
         else (
             StatusCode.OK if status is OperationStatus.SUCCEEDED else StatusCode.UNSET
         )

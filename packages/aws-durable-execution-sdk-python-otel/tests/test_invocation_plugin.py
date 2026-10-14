@@ -2306,10 +2306,10 @@ def test_invocation_hooks_bind_parent_and_restore_baggage(
     ("status", "error", "expected"),
     [
         (OperationStatus.SUCCEEDED, None, StatusCode.OK),
-        (OperationStatus.FAILED, None, StatusCode.UNSET),
+        (OperationStatus.FAILED, None, StatusCode.ERROR),
         (OperationStatus.CANCELLED, None, StatusCode.UNSET),
-        (OperationStatus.TIMED_OUT, None, StatusCode.UNSET),
-        (OperationStatus.STOPPED, None, StatusCode.UNSET),
+        (OperationStatus.TIMED_OUT, None, StatusCode.ERROR),
+        (OperationStatus.STOPPED, None, StatusCode.ERROR),
         (
             OperationStatus.FAILED,
             ErrorObject(message="failure", type="Example", data=None, stack_trace=None),

@@ -760,6 +760,12 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
             span.record_exception(
                 Exception(info.error.message or info.error.type or "Unknown error")
             )
+        elif info.status in (
+            OperationStatus.FAILED,
+            OperationStatus.TIMED_OUT,
+            OperationStatus.STOPPED,
+        ):
+            span.set_status(StatusCode.ERROR)
         elif info.status is OperationStatus.SUCCEEDED:
             span.set_status(StatusCode.OK)
 

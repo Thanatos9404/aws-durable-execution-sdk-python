@@ -153,9 +153,7 @@ def _run_public_callback_failure(
         ] == [error.to_dict() if has_details and error is not None else None]
         if has_details and not filesystem:
             assert callback_errors[0] is error
-        assert leaves[0].status.status_code.name == (
-            "ERROR" if has_details else "UNSET"
-        )
+        assert leaves[0].status.status_code.name == "ERROR"
         assert [event.name for event in leaves[0].events] == (
             ["exception"] if has_details else []
         )

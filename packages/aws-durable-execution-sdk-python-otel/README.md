@@ -395,10 +395,14 @@ each durable span in the same invocation.
 
 `durable.invocation.status` uses `RETRYING` when the core plugin hook reports
 `InvocationStatus.RETRY`. The core enum remains unchanged. Operation spans use
-OTel `OK` only for `SUCCEEDED`, `ERROR` when error details are delivered, and
-`UNSET` for other outcomes without error details, including `FAILED`,
-`CANCELLED`, `TIMED_OUT`, and `STOPPED`. The original durable operation status
-remains in `durable.operation.status`.
+OTel `ERROR` for explicit `FAILED`, `TIMED_OUT`, or `STOPPED` outcomes even when
+error details are absent. Supplied error details continue to set `ERROR` and
+record an exception event; a failure status alone does not invent that event.
+Without error details, `SUCCEEDED` is `OK` and other statuses, including
+`CANCELLED`, remain `UNSET`. The original durable operation status remains in
+`durable.operation.status`. A handler that catches an operation failure and
+returns successfully still has a successful invocation/workflow outcome; the
+failed operation retains its own error status on initial completion and replay.
 
 When a concurrent branch's terminal completion arrives before replay has created
 its parent span, Invocation view retains that completion until the actual parent
