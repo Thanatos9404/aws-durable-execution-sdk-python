@@ -168,6 +168,7 @@ EXPECTED_MODULES: frozenset[str] = frozenset(
         "otel_22_user_function_context",
         "otel_23_callback_function_context",
         "otel_24_invocation_retry_status",
+        "otel_25_caught_callback_failure_replay",
         "otel_26_external_callback_completion_replay",
         "otel_long_running_1_wait",
         "otel_long_running_2_retry",
@@ -406,6 +407,25 @@ def test_every_registered_handler_exists(
         assert function_name in exported, (
             f"{module_name} does not define {function_name}"
         )
+
+
+def test_case25_uses_its_caught_replay_handler_without_retargeting_other_cases(
+    template: dict[str, Any],
+) -> None:
+    resources = template["Resources"]
+    for prefix in ("Otel", "OtelExecution"):
+        assert resources[prefix + "25CallbackFailureWithoutError"]["Properties"][
+            "Handler"
+        ] == ("otel_25_caught_callback_failure_replay.handler")
+        assert resources[prefix + "17WaitForCallbackFailure"]["Properties"][
+            "Handler"
+        ] == ("otel_17_wait_for_callback_failure.handler")
+        assert resources[prefix + "24InvocationRetryStatus"]["Properties"][
+            "Handler"
+        ] == ("otel_24_invocation_retry_status.handler")
+        assert resources[prefix + "26ExternalCallbackReplay"]["Properties"][
+            "Handler"
+        ] == ("otel_26_external_callback_completion_replay.handler")
 
 
 def test_template_deploys_only_the_selected_view(template: dict[str, Any]) -> None:
