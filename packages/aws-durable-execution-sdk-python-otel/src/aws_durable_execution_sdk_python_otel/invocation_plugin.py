@@ -38,6 +38,7 @@ from opentelemetry.trace import (
 from aws_durable_execution_sdk_python_otel._invocation_state import (
     InvocationState,
     begin_state,
+    completed_input_parents,
     finish_state,
 )
 from aws_durable_execution_sdk_python_otel.context_extractors import (
@@ -637,7 +638,7 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         # Registration and dequeue share the lock, so an arriving completion
         # either sees its parent or is drained here. Do not hold it in callbacks.
         for pending_end in pending_ends:
-            self.on_operation_end(pending_end)
+            self._render_operation_end(pending_end)
         return span
 
     def _end_span(
@@ -756,6 +757,15 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
             name="Invocation",
             attributes=self._extract_attributes(info),
         )
+        # A cached completed child has no new segment. Keep its checkpointed
+        # logical parent identity, without creating or re-exporting a parent.
+        for parent in completed_input_parents(info):
+            parent_context = self._operation_link_context(parent.operation_id)
+            if parent_context is not None:
+                with self._operation_spans_lock:
+                    self._operation_spans[parent.operation_id] = DurableParentSpan(
+                        parent_context, start_time=parent.start_time
+                    )
 
         # Start and End share the invocation worker and token-owning Context.
         # Retain a valid same-trace ambient parent; otherwise bind this invocation.
@@ -964,6 +974,10 @@ class InvocationOtelPlugin(DurableInstrumentationPlugin):
         invocation is completing an operation that began earlier, so a short
         continuation span with a fresh span ID is created and ended.
         """
+        self._render_operation_end(info)
+
+    def _render_operation_end(self, info: OperationEndInfo) -> None:
+        """Render or defer one delivery without re-entering a public hook."""
         logger.debug("Durable operation ended: %s", info)
         if not self._tracing_enabled:
             return

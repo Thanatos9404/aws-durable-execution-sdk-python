@@ -68,6 +68,7 @@ from opentelemetry.trace import (
 from aws_durable_execution_sdk_python_otel._invocation_state import (
     ExecutionState,
     begin_state,
+    completed_input_parents,
     finish_state,
 )
 from aws_durable_execution_sdk_python_otel.context_extractors import (
@@ -300,6 +301,14 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
     def _ended_operation_ids(self, value: set[str]) -> None:
         self._state.get().ended_operation_ids = value
 
+    @property
+    def _pending_operation_ends(self) -> dict[str, list[OperationEndInfo]]:
+        return self._state.get().pending_operation_ends
+
+    @_pending_operation_ends.setter
+    def _pending_operation_ends(self, value: dict[str, list[OperationEndInfo]]) -> None:
+        self._state.get().pending_operation_ends = value
+
     def on_registration_result(self, registered: bool) -> None:
         """Preserve accepted resources, releasing only a discarded constructor."""
         if registered:
@@ -333,6 +342,9 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
     def _set_span(self, key: str, span: Span) -> None:
         with self._lock:
             self._operation_spans[key] = span
+            pending = self._pending_operation_ends.pop(key, [])
+        for info in pending:
+            self._render_operation_end(info)
 
     def _get_span(self, key: str | None) -> Span | None:
         if key is None:
@@ -633,6 +645,10 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
         self._start_workflow_span(info)
         # Keep the invocation on the shared execution trace.
         self._start_invocation_span(info)
+        # A completed child will not run another user-function Start hook.
+        # Reference its original logical identity without exporting it again.
+        for parent in completed_input_parents(info):
+            self._register_operation_placeholder(parent.operation_id, parent.start_time)
 
         # Make the Workflow span the active span so auto-instrumented spans
         # created during the invocation become its children. The token is
@@ -758,6 +774,9 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
             self._reset_state()
             return
 
+        with self._lock:
+            unresolved_parents = tuple(self._pending_operation_ends)
+
         # End the invocation span regardless of terminal status. Record the
         # invocation status and map it to a span status:
         #   SUCCEEDED/PENDING -> OK  (this invocation did its work, whether it
@@ -801,6 +820,10 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
                 flush_provider(provider.force_flush)
             except Exception:  # noqa: BLE001
                 logger.exception("force_flush failed at invocation end")
+        if unresolved_parents:
+            raise ValueError(
+                f"No parent span found for deferred operation ends: {unresolved_parents}"
+            )
 
     def _reset_state(self) -> None:
         self._detach_remaining_contexts()
@@ -816,6 +839,7 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
             self._operation_spans = {}
             self._checkpointed_context_ids = set()
             self._ended_operation_ids = set()
+            self._pending_operation_ends = {}
         self._tracing_enabled = False
         finish_state(self._state)
 
@@ -836,6 +860,10 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
         self._note_parent_start(info.parent_id, info.start_time)
 
     def on_operation_end(self, info: OperationEndInfo) -> None:
+        self._render_operation_end(info)
+
+    def _render_operation_end(self, info: OperationEndInfo) -> None:
+        """Render or defer one delivery without re-entering a public hook."""
         logger.debug("Durable operation ended: %s", info)
         if not self._tracing_enabled:
             return
@@ -844,6 +872,13 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
         # replay-only and must not re-export the deterministic logical span.
         if info.is_replayed:
             return
+        with self._lock:
+            if (
+                info.parent_id is not None
+                and info.parent_id not in self._operation_spans
+            ):
+                self._pending_operation_ends.setdefault(info.parent_id, []).append(info)
+                return
         # Export the span only on the first end for this operation.
         with self._lock:
             if info.operation_id in self._ended_operation_ids:

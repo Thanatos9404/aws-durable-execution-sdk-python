@@ -416,9 +416,11 @@ class DurableInstrumentationPlugin:
 
     def on_operation_end(self, info: OperationEndInfo) -> None:
         """
-        Called when an operation reaches a terminal status. Terminal operations
-        are not emitted again during replay. Child contexts without a terminal
-        checkpoint may emit this from the thread that runs the operation.
+        Called when an operation reaches a terminal status. Visible terminal
+        input updates are reported after all invocation-start hooks, even if
+        replay skips their completed child context. Duplicate deliveries of an
+        operation/status within one invocation are suppressed. Child contexts
+        without a terminal checkpoint may emit this from their operation thread.
 
         Args:
             info: Information about the operation.
@@ -573,6 +575,8 @@ class PluginExecutor:
     def _snapshot_operation_infos(
         self,
         operations_provider: Callable[[], Mapping[str, Operation]] | None,
+        *,
+        raw_snapshot: dict[str, Operation] | None = None,
     ) -> dict[str, OperationInfo]:
         """Build the plugin ``OperationInfo`` view of the current operation map.
 
@@ -593,7 +597,11 @@ class PluginExecutor:
         if not self._plugins or operations_provider is None:
             return {}
         try:
-            return _to_operation_info_map(operations_provider())
+            source = dict(operations_provider())
+            snapshot = _to_operation_info_map(source)
+            if raw_snapshot is not None:
+                raw_snapshot.update(source)
+            return snapshot
         except Exception:
             # A plugin-facing view must never break the execution.
             logger.exception("Failed to snapshot operations for plugin hook")
@@ -624,7 +632,10 @@ class PluginExecutor:
         """
         aws_request_id = lambda_context.aws_request_id if lambda_context else None
         self._operations_provider = operations_provider if self._plugins else None
-        operations = self._snapshot_operation_infos(operations_provider)
+        raw_operations: dict[str, Operation] = {}
+        operations = self._snapshot_operation_infos(
+            operations_provider, raw_snapshot=raw_operations
+        )
         self._invocation_status = InvocationStartInfo(
             execution_arn=execution_arn,
             request_id=aws_request_id,
@@ -638,7 +649,38 @@ class PluginExecutor:
                 if operation_id in operations
             },
         )
+        # Capture delivery data before exposing the mutable snapshot maps to
+        # Start hooks. A cached child may never visit its updated descendant.
+        input_ends = [
+            OperationEndInfo(
+                operation_id=operation.operation_id,
+                operation_type=_to_operation_type(operation.operation_type),
+                sub_type=operation.sub_type,
+                name=operation.name,
+                parent_id=operation.parent_id,
+                start_time=operation.start_timestamp,
+                end_time=operation.end_timestamp,
+                result=_extract_result(operation),
+                error=self._extract_error(operation),
+                attempt=(
+                    operation.step_details.attempt if operation.step_details else None
+                ),
+                is_replayed=False,
+                status=operation.status,
+            )
+            for operation_id in (updated_operation_ids or [])
+            if operation_id in raw_operations
+            for operation in (raw_operations[operation_id],)
+            if self._is_terminal_status(operation.status)
+        ]
         self.execute_plugins(self._invocation_status, sync=True)
+        if input_ends:
+
+            def report_input_updates() -> None:
+                for operation_end in input_ends:
+                    self._report_terminal_update(operation_end)
+
+            self._run_in_invocation_context(report_input_updates)
 
     def _snapshot_execution_input(self, execution_input: Any) -> Any:
         """Deep-copy the execution input so the plugin view is isolated.
@@ -827,13 +869,7 @@ class PluginExecutor:
                 # Replay delivery and checkpoint responses can report the same
                 # completion. Deduplicate actual notifications, not state that
                 # may have arrived without an UpdatedOperationIds notification.
-                if self._plugins:
-                    key = (operation.operation_id, operation.status)
-                    with self._terminal_updates_lock:
-                        if key in self._reported_terminal_updates:
-                            continue
-                        self._reported_terminal_updates.add(key)
-                self.execute_plugins(
+                self._report_terminal_update(
                     OperationEndInfo(
                         operation_id=operation.operation_id,
                         operation_type=_to_operation_type(operation.operation_type),
@@ -852,7 +888,6 @@ class PluginExecutor:
                         ),
                         is_replayed=False,
                     ),
-                    sync=True,
                 )
 
         if (
@@ -882,6 +917,16 @@ class PluginExecutor:
             ),
             sync=True,
         )
+
+    def _report_terminal_update(self, info: OperationEndInfo) -> None:
+        """Claim actual input/checkpoint delivery once in this invocation."""
+        if self._plugins:
+            key = (info.operation_id, info.status)
+            with self._terminal_updates_lock:
+                if key in self._reported_terminal_updates:
+                    return
+                self._reported_terminal_updates.add(key)
+        self.execute_plugins(info, sync=True)
 
     @staticmethod
     def _extract_error(operation: Operation):

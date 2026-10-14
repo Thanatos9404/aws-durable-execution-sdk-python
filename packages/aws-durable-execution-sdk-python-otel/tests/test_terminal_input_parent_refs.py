@@ -1,0 +1,181 @@
+"""Missing parent metadata is deferred rather than guessed or reparented."""
+
+import contextvars
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from aws_durable_execution_sdk_python.plugin import (
+    InvocationEndInfo,
+    InvocationStartInfo,
+    InvocationStatus,
+    OperationEndInfo,
+    OperationInfo,
+    OperationStartInfo,
+    OperationStatus,
+    OperationType,
+    UserFunctionEndInfo,
+    UserFunctionStartInfo,
+)
+from opentelemetry import context as otel_context
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from aws_durable_execution_sdk_python_otel import (
+    ExecutionOtelPlugin,
+    InvocationOtelPlugin,
+    OtelPluginConfig,
+)
+
+
+def _info(cls, now, **changes):
+    fields = dict(
+        operation_id="b",
+        operation_type=OperationType.CALLBACK,
+        sub_type=None,
+        name="b",
+        parent_id="parent",
+        start_time=now,
+        is_replayed=False,
+        status=OperationStatus.SUCCEEDED,
+        end_time=now + timedelta(seconds=1),
+    )
+    fields.update(changes)
+    return cls(**fields)
+
+
+@pytest.mark.parametrize("view", [ExecutionOtelPlugin, InvocationOtelPlugin])
+@pytest.mark.parametrize("parent_visible", [False, True])
+def test_nonterminal_or_missing_parent_waits_for_its_actual_span(view, parent_visible):
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    plugin = view(
+        OtelPluginConfig(
+            tracer_provider=provider,
+            context_extractor=lambda _: None,
+            enrich_logger=False,
+        )
+    )
+    now = datetime.now(UTC)
+    invocation = dict(
+        request_id="request",
+        execution_arn="execution/parent",
+        is_first_invocation=False,
+        execution_start_time=now,
+    )
+    b = _info(OperationInfo, now)
+    parent = _info(
+        OperationInfo,
+        now,
+        operation_id="parent",
+        operation_type=OperationType.CONTEXT,
+        name="parent",
+        parent_id=None,
+        status=OperationStatus.STARTED,
+        end_time=None,
+    )
+    operations = {"b": b}
+    if parent_visible:
+        operations["parent"] = parent
+
+    def invoke():
+        before = otel_context.get_current()
+        plugin.on_invocation_start(
+            InvocationStartInfo(
+                **invocation, operations=operations, updated_operations={"b": b}
+            )
+        )
+        plugin.on_operation_end(_info(OperationEndInfo, now))
+        assert not [
+            s
+            for s in exporter.get_finished_spans()
+            if s.attributes.get("durable.operation.id") == "b"
+        ]
+        parent_fields = dict(
+            operation_id="parent",
+            operation_type=OperationType.CONTEXT,
+            name="parent",
+            parent_id=None,
+            status=OperationStatus.STARTED,
+            is_replayed=True,
+            end_time=None,
+        )
+        plugin.on_operation_start(_info(OperationStartInfo, now, **parent_fields))
+        start = _info(UserFunctionStartInfo, now, **parent_fields)
+        plugin.on_user_function_start(start)
+        actual_parent = plugin._get_span("parent").get_span_context()
+        plugin.on_user_function_end(UserFunctionEndInfo.from_start_info(start, None))
+        plugin.on_operation_end(
+            _info(
+                OperationEndInfo,
+                now,
+                operation_id="parent",
+                operation_type=OperationType.CONTEXT,
+                name="parent",
+                parent_id=None,
+            )
+        )
+        plugin.on_invocation_end(
+            InvocationEndInfo(**invocation, status=InvocationStatus.SUCCEEDED)
+        )
+        spans = [
+            s
+            for s in exporter.get_finished_spans()
+            if s.attributes.get("durable.operation.id") == "b"
+        ]
+        assert len(spans) == 1 and spans[0].parent.span_id == actual_parent.span_id
+        assert otel_context.get_current() == before
+        assert plugin._state not in contextvars.copy_context()
+
+    try:
+        contextvars.Context().run(invoke)
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("view", [ExecutionOtelPlugin, InvocationOtelPlugin])
+def test_unavailable_parent_is_reported_after_context_cleanup(view):
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    plugin = view(
+        OtelPluginConfig(
+            tracer_provider=provider,
+            context_extractor=lambda _: None,
+            enrich_logger=False,
+        )
+    )
+    now = datetime.now(UTC)
+    invocation = dict(
+        request_id="request",
+        execution_arn="execution/unknown-parent",
+        is_first_invocation=False,
+        execution_start_time=now,
+    )
+    b = _info(OperationInfo, now)
+
+    def invoke():
+        before = otel_context.get_current()
+        plugin.on_invocation_start(
+            InvocationStartInfo(
+                **invocation, operations={"b": b}, updated_operations={"b": b}
+            )
+        )
+        plugin.on_operation_end(_info(OperationEndInfo, now))
+        with pytest.raises(ValueError, match="No parent span found for deferred"):
+            plugin.on_invocation_end(
+                InvocationEndInfo(**invocation, status=InvocationStatus.PENDING)
+            )
+        assert not [
+            s
+            for s in exporter.get_finished_spans()
+            if s.attributes.get("durable.operation.id") == "b"
+        ]
+        assert otel_context.get_current() == before
+        assert plugin._state not in contextvars.copy_context()
+
+    try:
+        contextvars.Context().run(invoke)
+    finally:
+        provider.shutdown()

@@ -448,6 +448,14 @@ cleanup clearing another's trace. Provider configuration and registration remain
 instance resources. SDK-owned worker tasks capture the selected invocation
 Context; Start/End hooks and token reset retain their existing owner and order.
 
+Terminal input updates can be observed even when replay skips their completed
+child context. When the input contains that checkpointed parent's terminal
+metadata, the views reference its original logical span identity without
+re-exporting the parent. Missing or nonterminal parents are deferred until their
+actual span is available; unresolved parentage is reported after cleanup instead
+of inventing a root parent. Draining this private queue does not call the public
+operation-end hook again.
+
 Completion metadata can be redelivered after a failed invocation or checkpoint
 transport attempt that has no successful response acknowledgment. There is no
 exporter acknowledgment in durable state, so this does not promise exactly-once

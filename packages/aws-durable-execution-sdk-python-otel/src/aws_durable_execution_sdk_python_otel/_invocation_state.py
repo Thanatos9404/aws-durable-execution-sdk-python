@@ -9,7 +9,13 @@ import datetime
 import threading
 from typing import Any, Generic, TypeVar
 
-from aws_durable_execution_sdk_python.plugin import OperationEndInfo
+from aws_durable_execution_sdk_python.plugin import (
+    InvocationStartInfo,
+    OperationEndInfo,
+    OperationInfo,
+    OperationStatus,
+    OperationType,
+)
 from opentelemetry.sdk.trace.sampling import Sampler
 from opentelemetry.trace import Span, Tracer, TracerProvider
 
@@ -51,6 +57,9 @@ class ExecutionState(_InvocationState[str]):
     invocation_span: Span | None = None
     checkpointed_context_ids: set[str] = field(default_factory=set)
     ended_operation_ids: set[str] = field(default_factory=set)
+    pending_operation_ends: dict[str, list[OperationEndInfo]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
@@ -64,6 +73,29 @@ class InvocationState(_InvocationState[str | None]):
 
 
 _State = TypeVar("_State", bound=_InvocationState[Any])
+
+
+def completed_input_parents(info: InvocationStartInfo) -> list[OperationInfo]:
+    """Known checkpointed parents of input updates, without guessing missing data."""
+    parents: dict[str, OperationInfo] = {}
+    for operation in info.updated_operations.values():
+        parent = (
+            info.operations.get(operation.parent_id) if operation.parent_id else None
+        )
+        if (
+            parent is not None
+            and parent.operation_type is OperationType.CONTEXT
+            and parent.status
+            in (
+                OperationStatus.SUCCEEDED,
+                OperationStatus.FAILED,
+                OperationStatus.TIMED_OUT,
+                OperationStatus.STOPPED,
+                OperationStatus.CANCELLED,
+            )
+        ):
+            parents[parent.operation_id] = parent
+    return list(parents.values())
 
 
 def begin_state(
