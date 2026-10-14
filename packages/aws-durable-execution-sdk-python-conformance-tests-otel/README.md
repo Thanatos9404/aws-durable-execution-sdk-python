@@ -67,7 +67,7 @@ view named by its `OtelSuite` parameter.
 | `otel-invocation-22` | `otel_22_user_function_context.handler` | Creates ordinary user spans under the active handler, attempt, child, branch, and iteration contexts. |
 | `otel-invocation-23` | `otel_23_callback_function_context.handler` | Verifies retry/check attempts, callback submitter, wrapped retry helper, and virtual-child callback parents. |
 | `otel-invocation-24` | `otel_24_invocation_retry_status.handler` | Raises a retryable invocation error after a completed step, then resumes with its saved result. |
-| `otel-invocation-25` | `otel_17_wait_for_callback_failure.handler` | Targets a failed callback without error details; service history must satisfy the explicit no-error-details precondition. |
+| `otel-invocation-25` | `otel_25_caught_callback_failure_replay.handler` | Catches the failed callback child, records `caught`, replays through two typed barriers, and returns `caught/one/two`. |
 | `otel-invocation-26` | `otel_26_external_callback_completion_replay.handler` | Completes a root callback after suspension, saves its result in a step, and replays it through two callback barriers. |
 | `otel-execution-1` | `otel_1_success.handler` | Verifies the execution-view workflow, step, and attempt hierarchy. |
 | `otel-execution-2` | `otel_2_wait_resume.handler` | Verifies the execution view across a resumed invocation. |
@@ -93,7 +93,7 @@ view named by its `OtelSuite` parameter.
 | `otel-execution-22` | `otel_22_user_function_context.handler` | Observes active execution-view callback contexts without supplying or repairing parents. |
 | `otel-execution-23` | `otel_23_callback_function_context.handler` | Verifies the same SDK-owned callback lifecycle parents in the execution view. |
 | `otel-execution-24` | `otel_24_invocation_retry_status.handler` | Verifies invocation retry status independently of step retry and recovery re-exports. |
-| `otel-execution-25` | `otel_17_wait_for_callback_failure.handler` | Targets the same errorless failed callback and its `UNSET` leaf in the execution view. |
+| `otel-execution-25` | `otel_25_caught_callback_failure_replay.handler` | Requires one `FAILED`/`ERROR` callback leaf without an invented exception event while the workflow succeeds after two replays. |
 | `otel-execution-26` | `otel_26_external_callback_completion_replay.handler` | Requires one terminal root-callback export at first completion and no duplicate exports on two later replays. |
 | `otel-long-running-1` | `otel_long_running_1_wait.handler` | Verifies wait and resume telemetry across a long durable suspension. |
 | `otel-long-running-2` | `otel_long_running_2_retry.handler` | Verifies retry telemetry across a long durable backoff. |
@@ -120,14 +120,24 @@ Detailed callback-failure history retains the service's empty error `Payload`
 object with `Truncated: false`, while SDK-facing state still has no error details.
 Metadata-only history and nonempty errors retain their existing representation.
 
-Case 24 covers invocation `RETRY` becoming `RETRYING`/`UNSET`. Case 25 targets the
-separate rule that a failed operation without error details remains `UNSET`.
-Its cloud coverage requires both views to pass the raw service-history no-error-details
-precondition and the telemetry assertions. Local file-store results establish
-SDK behavior; that AWS service precondition still needs independent validation.
-`CANCELLED`, `TIMED_OUT` and `STOPPED` without error details have explicit unit
-coverage in both views; their corresponding cloud paths are not established.
-The existing success/`OK` and detailed-error/`ERROR` controls remain in the suites.
+Case 24 covers invocation `RETRY` becoming `RETRYING`/`UNSET`. Case 25 uses
+`caught-callback-failure-replay`: it catches only `CallbackExternalError`, which
+`wait_for_callback` restores from the failed child on replay, then checkpoints `caught` and awaits
+two root barriers. The final result is `caught/one/two`, with three PENDING
+invocations followed by SUCCEEDED. The failed callback remains `FAILED`/`ERROR`
+without inventing an exception event. The marker body and failed submitter run
+once; replay reconstructs the failed child without revisiting its callback body.
+Marker and barrier failures escape the narrow catch. Case17 retains its
+unhandled supplied-error behavior.
+
+This fixture must be paired with the Shared case25 catalog that expects a
+successful execution and the three phase-gated callback actions. The previous
+case25 catalog expects a failed execution and is not compatible with this new
+routing. Cloud coverage requires the typed empty, untruncated callback error
+payload and actual trace evidence in both views. The initial-active-invocation,
+completion-during-flush and pruned-child-history boundaries are separate claims.
+Other rare terminal statuses without details retain local coverage; no new
+cloud path is claimed for them.
 
 Case 26 revisits a root-level public callback on every replay. The driver waits
 for `InvocationCompleted` before completing the target and each barrier. The
