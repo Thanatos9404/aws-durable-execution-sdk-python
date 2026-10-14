@@ -34,7 +34,7 @@ from __future__ import annotations
 import datetime
 import logging
 import threading
-from typing import Any, ClassVar, TYPE_CHECKING
+from typing import Any, ClassVar, TYPE_CHECKING, cast
 
 from aws_durable_execution_sdk_python.plugin import (
     DurableInstrumentationPlugin,
@@ -457,6 +457,13 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
         ):
             return None
         operation_span = self._get_span(info.operation_id)
+        if (
+            operation_span is None or isinstance(operation_span, DurableParentSpan)
+        ) and type(cast(SdkTracer, self._tracer).sampler) is not DurableSampler:
+            # A deferred identity has no operation sampling decision yet. A
+            # replaced sampler may decide differently for Invocation and invoke;
+            # do not guess its result or invoke it early to produce a carrier.
+            return None
         span_context = (
             operation_span.get_span_context()
             if operation_span is not None

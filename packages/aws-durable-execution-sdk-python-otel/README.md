@@ -431,8 +431,13 @@ SDK-owned types. It encodes canonical X-Ray `Root`, the calling operation's
 `Parent`, and resolved `Sampled=1` or `Sampled=0`, without creating an extra span.
 An existing operation's actual span ID is used; before span creation, its stable
 ID is derived from the execution ARN and operation ID. Unrelated ambient spans
-cannot replace execution ownership. Inactive/mismatched executions contribute
-nothing. Tracer, provider and resource ownership remain unchanged.
+cannot replace execution ownership. An operation that has already started uses
+its actual span's sampled flag. A deferred operation contributes metadata only
+while the instrumentation tracer still uses the installed `DurableSampler`:
+replacing that sampler after invocation Start may give the operation a different
+sampling decision, so the producer abstains instead of guessing or querying the
+sampler early. Inactive/mismatched executions contribute nothing. Tracer,
+provider and resource ownership remain unchanged.
 
 The core now calls the collector only for a new invoke START and persists the
 contribution in flat `ChainedInvokeOptions.XAmznTraceId`. Pending and terminal
