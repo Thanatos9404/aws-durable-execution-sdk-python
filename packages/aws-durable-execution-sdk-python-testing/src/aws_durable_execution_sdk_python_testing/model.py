@@ -80,17 +80,6 @@ TERMINAL_STATUSES: set[OperationStatus] = {
 }
 
 
-def _parse_operation_sub_type(value: str | None) -> OperationSubType | str | None:
-    if not value:
-        return None
-    try:
-        return OperationSubType(value)
-    except ValueError:
-        if not isinstance(value, str):
-            raise
-        return value
-
-
 @dataclass(frozen=True)
 class LambdaContext(LambdaContextProtocol):
     """Lambda context for testing."""
@@ -2667,10 +2656,12 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
         )
 
         # Parse sub_type
-        try:
-            sub_type = _parse_operation_sub_type(event.sub_type)
-        except ValueError as e:
-            raise InvalidParameterValueException(str(e)) from e
+        sub_type: OperationSubType | None = None
+        if event.sub_type:
+            try:
+                sub_type = OperationSubType(event.sub_type)
+            except ValueError as e:
+                raise InvalidParameterValueException(str(e)) from e
 
         # Create base operation
         operation = Operation(
@@ -2679,8 +2670,7 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
             status=status,
             name=event.name,
             parent_id=event.parent_id,
-            # Core models still annotate enums; history readers also retain strings.
-            sub_type=cast(OperationSubType | None, sub_type),
+            sub_type=sub_type,
             start_timestamp=event.event_timestamp,
         )
 
@@ -3184,11 +3174,9 @@ class CheckpointDurableExecutionRequest:
                     action=OperationAction(update_data["Action"]),
                     parent_id=update_data.get("ParentId"),
                     name=update_data.get("Name"),
-                    # The current core constructor annotation is enum-only.
-                    sub_type=cast(
-                        OperationSubType | None,
-                        _parse_operation_sub_type(update_data.get("SubType")),
-                    ),
+                    sub_type=OperationSubType(update_data["SubType"])
+                    if update_data.get("SubType")
+                    else None,
                     payload=update_data.get("Payload"),
                     error=ErrorObject.from_dict(update_data["Error"])
                     if update_data.get("Error")

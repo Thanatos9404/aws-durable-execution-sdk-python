@@ -170,15 +170,12 @@ flow, pagination, and a map of the code.
 
 ## Documentation
 
-History projection and checkpoint-request parsing preserve string subtype labels,
-including labels not listed in the current core enum. Known labels still parse to
-their existing enum members; unknown labels are retained as plain strings at these
-runtime reading boundaries. Declared public core and testing subtype types remain
-unchanged. This prepares readers for future string metadata; it does not promise
-typed custom-subtype support. Creating, serializing, persisting and replaying
-operations remains governed by the installed core SDK's subtype support. This
-reader compatibility does not add custom subtype configuration or change the core
-enum and replay contract.
+History event projection can read enum members or plain string subtype metadata.
+Parsing checkpoints and reconstructing typed operation results still requires
+known core enum labels; unknown labels are rejected before checkpoint mutation.
+Declared public core and testing subtype types remain unchanged. Support for
+custom-subtype configuration, persistence and replay requires a coordinated future
+core implementation; this preparation does not change those contracts.
 
 ### Error Handling
 

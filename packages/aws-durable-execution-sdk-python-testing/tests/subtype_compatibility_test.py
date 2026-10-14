@@ -1,4 +1,4 @@
-"""Preserve subtype labels at the testing library's public wire boundaries."""
+"""Read string metadata without widening current checkpoint/result contracts."""
 
 import datetime
 
@@ -16,6 +16,9 @@ from aws_durable_execution_sdk_python_testing.model import (
     EventCreationContext,
     StartDurableExecutionInput,
     events_to_operations,
+)
+from aws_durable_execution_sdk_python_testing.exceptions import (
+    InvalidParameterValueException,
 )
 
 
@@ -55,13 +58,18 @@ def test_history_projection_keeps_enum_or_plain_string_subtype(sub_type, expecte
         assert "SubType" not in event.to_dict()
     else:
         assert event.to_dict()["SubType"] == expected
+    assert Event.from_dict(event.to_dict()).sub_type == expected
+    if expected == "Library_CustomStep":
+        with pytest.raises(InvalidParameterValueException):
+            events_to_operations([event])
+        return
     (restored,) = events_to_operations([event])
     assert restored.operation_type is OperationType.STEP
     assert getattr(restored.sub_type, "value", restored.sub_type) == expected
 
 
-@pytest.mark.parametrize("sub_type", ["Step", "Library_CustomStep", None, ""])
-def test_checkpoint_request_parses_recorded_or_unknown_string_subtype(sub_type):
+@pytest.mark.parametrize("sub_type", ["Step", None, ""])
+def test_checkpoint_request_preserves_existing_enum_contract(sub_type):
     request = CheckpointDurableExecutionRequest.from_dict(
         {
             "CheckpointToken": "token",
@@ -83,13 +91,10 @@ def test_checkpoint_request_parses_recorded_or_unknown_string_subtype(sub_type):
         assert update.sub_type is OperationSubType.STEP
     elif not sub_type:
         assert update.sub_type is None
-    else:
-        assert isinstance(update.sub_type, str)
-        assert update.sub_type == sub_type
 
 
-@pytest.mark.parametrize("sub_type", [42, True])
-def test_checkpoint_request_rejects_non_string_subtype(sub_type):
+@pytest.mark.parametrize("sub_type", ["Library_CustomStep", 42, True])
+def test_checkpoint_request_rejects_unsupported_subtype(sub_type):
     with pytest.raises(ValueError, match="not a valid OperationSubType"):
         CheckpointDurableExecutionRequest.from_dict(
             {

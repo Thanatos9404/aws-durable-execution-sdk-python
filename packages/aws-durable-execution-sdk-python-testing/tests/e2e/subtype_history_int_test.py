@@ -16,8 +16,8 @@ from aws_durable_execution_sdk_python_testing.model import (
 from aws_durable_execution_sdk_python_testing.runner import DurableFunctionTestResult
 
 
-@pytest.mark.parametrize("label", ["Step", "Library_CustomStep", None])
-def test_history_result_preserves_subtype_and_unrelated_operations(label):
+@pytest.mark.parametrize("label", ["Step", None])
+def test_history_result_preserves_declared_enum_contract(label):
     events = []
     for index, (name, sub_type) in enumerate(
         [("known", "Step"), ("target", label)], start=1
@@ -58,6 +58,3 @@ def test_history_result_preserves_subtype_and_unrelated_operations(label):
         assert target.sub_type is OperationSubType.STEP
     elif label is None:
         assert target.sub_type is None
-    else:
-        assert type(target.sub_type) is str
-        assert target.sub_type == label
