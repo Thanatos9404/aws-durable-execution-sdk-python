@@ -77,26 +77,20 @@ _State = TypeVar("_State", bound=_InvocationState[Any])
 
 
 def completed_input_parents(info: InvocationStartInfo) -> list[OperationInfo]:
-    """Known checkpointed parents of input updates, without guessing missing data."""
-    parents: dict[str, OperationInfo] = {}
-    for operation in info.updated_operations.values():
-        parent = (
-            info.operations.get(operation.parent_id) if operation.parent_id else None
+    """Known terminal contexts that may parent input or later checkpoint updates."""
+    return [
+        operation
+        for operation in info.operations.values()
+        if operation.operation_type is OperationType.CONTEXT
+        and operation.status
+        in (
+            OperationStatus.SUCCEEDED,
+            OperationStatus.FAILED,
+            OperationStatus.TIMED_OUT,
+            OperationStatus.STOPPED,
+            OperationStatus.CANCELLED,
         )
-        if (
-            parent is not None
-            and parent.operation_type is OperationType.CONTEXT
-            and parent.status
-            in (
-                OperationStatus.SUCCEEDED,
-                OperationStatus.FAILED,
-                OperationStatus.TIMED_OUT,
-                OperationStatus.STOPPED,
-                OperationStatus.CANCELLED,
-            )
-        ):
-            parents[parent.operation_id] = parent
-    return list(parents.values())
+    ]
 
 
 def begin_state(

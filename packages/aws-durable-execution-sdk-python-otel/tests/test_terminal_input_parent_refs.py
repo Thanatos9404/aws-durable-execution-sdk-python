@@ -304,3 +304,53 @@ def test_completed_input_parent_waits_for_current_invocation_segment():
         assert plugin._state.get().input_parent_refs == {}
     finally:
         provider.shutdown()
+
+
+def test_completed_parent_refs_cover_later_updates_without_guessing():
+    from aws_durable_execution_sdk_python_otel._invocation_state import (
+        completed_input_parents,
+    )
+
+    now = datetime.now(UTC)
+    parent = _info(
+        OperationInfo,
+        now,
+        operation_id="parent",
+        operation_type=OperationType.CONTEXT,
+        name="parent",
+        parent_id=None,
+    )
+    unfinished = _info(
+        OperationInfo,
+        now,
+        operation_id="unfinished",
+        operation_type=OperationType.CONTEXT,
+        status=OperationStatus.STARTED,
+    )
+    step = _info(
+        OperationInfo, now, operation_id="step", operation_type=OperationType.STEP
+    )
+    invocation = dict(
+        request_id="request",
+        execution_arn="execution/full-parent",
+        is_first_invocation=False,
+        execution_start_time=now,
+    )
+    assert completed_input_parents(
+        InvocationStartInfo(
+            **invocation,
+            operations={"parent": parent, "unfinished": unfinished, "step": step},
+            updated_operations={},
+        )
+    ) == [parent]
+    missing_parent_child = _info(OperationInfo, now)
+    assert (
+        completed_input_parents(
+            InvocationStartInfo(
+                **invocation,
+                operations={"b": missing_parent_child},
+                updated_operations={"b": missing_parent_child},
+            )
+        )
+        == []
+    )

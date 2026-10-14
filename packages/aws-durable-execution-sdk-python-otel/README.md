@@ -449,7 +449,9 @@ instance resources. SDK-owned worker tasks capture the selected invocation
 Context; Start/End hooks and token reset retain their existing owner and order.
 
 Terminal input updates can be observed even when replay skips their completed
-child context. A child that finishes during the current invocation retains its
+child context. Known completed context metadata is retained from the full input
+snapshot, including parents whose descendants are still pending at Start and
+complete in a later checkpoint. A child that finishes during the current invocation retains its
 actual parent context for later descendant checkpoint deliveries. In Invocation
 view, input completions first wait for the handler to create any current replay
 segment, including `ReplayChildren` for large results. At invocation End, only
