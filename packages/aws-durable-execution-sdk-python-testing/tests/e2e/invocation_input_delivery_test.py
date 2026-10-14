@@ -12,6 +12,8 @@ from aws_durable_execution_sdk_python import (
 from aws_durable_execution_sdk_python.config import CallbackConfig
 from aws_durable_execution_sdk_python.serdes import JsonSerDes
 from aws_durable_execution_sdk_python.plugin import DurableInstrumentationPlugin
+from aws_durable_execution_sdk_python_testing.execution import Execution
+from aws_durable_execution_sdk_python_testing.executor import Executor, InvocationState
 from aws_durable_execution_sdk_python_testing.runner import DurableFunctionTestRunner
 from aws_durable_execution_sdk_python_testing.stores.filesystem import (
     FileSystemExecutionStore,
@@ -23,8 +25,9 @@ from aws_durable_execution_sdk_python_testing.stores.memory import (
 
 @pytest.mark.parametrize("filesystem", [False, True])
 @pytest.mark.parametrize("failed_delivery", [False, True])
+@pytest.mark.parametrize("legacy_format", [False, True])
 def test_callback_input_acknowledgment_survives_checkpoint_free_resume(
-    filesystem, failed_delivery, tmp_path
+    filesystem, failed_delivery, legacy_format, tmp_path, monkeypatch
 ):
     store = (
         FileSystemExecutionStore.create(tmp_path / "store")
@@ -36,6 +39,36 @@ def test_callback_input_acknowledgment_survives_checkpoint_free_resume(
     operation_ends = []
     attempts = []
     marker_calls = []
+    legacy_restores = []
+
+    original_begin = Executor._begin_invocation  # noqa: SLF001
+
+    def begin_with_old_store(self, arn):
+        # Rehydrate a real completed callback using the persisted format that
+        # predates sequence accounting. No SDK hook or invocation input is faked.
+        if (
+            legacy_format
+            and not legacy_restores
+            and self._invocation_gate(arn) is InvocationState.PRE_INVOKE  # noqa: SLF001
+        ):
+            execution = store.load(arn)
+            if execution.updated_operation_ids:
+                snapshot = execution.to_json_dict()
+                for field in (
+                    "SeqCounter",
+                    "HandlerSeenSeq",
+                    "OperationLastTouchedSeq",
+                    "OperationSizeBytes",
+                ):
+                    snapshot.pop(field)
+                restored = Execution.from_json_dict(snapshot)
+                assert restored.seq_counter == restored.handler_seen_seq == 0
+                assert restored.updated_operation_ids == execution.updated_operation_ids
+                store.save(restored)
+                legacy_restores.append(snapshot)
+        return original_begin(self, arn)
+
+    monkeypatch.setattr(Executor, "_begin_invocation", begin_with_old_store)
 
     class Observe(DurableInstrumentationPlugin):
         def on_invocation_start(self, info):
@@ -108,3 +141,4 @@ def test_callback_input_acknowledgment_survives_checkpoint_free_resume(
     assert operation_ends == [(2, "a", False), (3, "b", False)]
     assert marker_calls == [1]
     assert len(attempts) == (4 if failed_delivery else 3)
+    assert len(legacy_restores) == int(legacy_format)

@@ -877,18 +877,20 @@ class OperationPaginatorState:
         ]
 
     def advance_handler_seen(self, seq: int) -> None:
-        """Advance the wrapped execution's ``handler_seen_seq`` to
-        ``seq`` if that represents forward progress. Monotonic:
-        smaller or equal values are ignored."""
+        """Acknowledge delivered updates without retreating the watermark.
+
+        Equal acknowledgments also consume old-format, unversioned update IDs.
+        Only versions covered by this delivery may be removed.
+        """
         if seq > self.execution.handler_seen_seq:
             self.execution.handler_seen_seq = seq
-            # A checkpoint response or completed invocation delivered this state.
-            # Retain changes newer than that acknowledged snapshot.
-            self.execution.updated_operation_ids = [
-                operation_id
-                for operation_id in self.execution.updated_operation_ids
-                if self.execution.operation_last_touched_seq.get(operation_id, 0) > seq
-            ]
+        # A checkpoint response or completed invocation delivered this state.
+        # Retain changes newer than that acknowledged snapshot.
+        self.execution.updated_operation_ids = [
+            operation_id
+            for operation_id in self.execution.updated_operation_ids
+            if self.execution.operation_last_touched_seq.get(operation_id, 0) > seq
+        ]
 
     # --- internals -------------------------------------------------
 

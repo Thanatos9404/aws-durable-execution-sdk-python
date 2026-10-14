@@ -1778,6 +1778,32 @@ def test_checkpoint_consumes_only_updates_covered_by_its_watermark(
     assert execution.updated_operation_ids == []
 
 
+@pytest.mark.parametrize("seen,ack", [(0, 0), (5, 5), (5, 3)])
+def test_acknowledged_updates_are_pruned_without_watermark_progress(seen, ack):
+    execution = Execution("test-arn", _make_start_input(), [])
+    snapshot = execution.to_json_dict()
+    for field in (
+        "SeqCounter",
+        "HandlerSeenSeq",
+        "OperationLastTouchedSeq",
+        "OperationSizeBytes",
+    ):
+        snapshot.pop(field)
+    snapshot["UpdatedOperationIds"] = ["legacy", "newer"]
+    restored = Execution.from_json_dict(snapshot)
+    restored.handler_seen_seq = seen
+    restored.operation_last_touched_seq["newer"] = ack + 1
+    paginator = OperationPaginatorState.pin(restored)
+
+    paginator.advance_handler_seen(ack)
+
+    assert restored.updated_operation_ids == ["newer"]
+    assert restored.handler_seen_seq == seen
+    assert restored.token_sequence == restored.seq_counter == 0
+    paginator.advance_handler_seen(ack)
+    assert restored.updated_operation_ids == ["newer"]
+
+
 def test_function_arn_is_qualified_with_the_executed_version():
     execution = Execution.new(_make_start_input())
     execution.region = "ap-southeast-2"
