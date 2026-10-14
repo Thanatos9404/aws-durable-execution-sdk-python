@@ -190,9 +190,9 @@ def durable_execution(
     logger.debug("Starting durable execution handler...")
 
     configured_plugins = load_configured_plugins(plugins)
-    plugin_executor = PluginExecutor(configured_plugins)
 
     def wrapper(event: Any, context: LambdaContext) -> MutableMapping[str, Any]:
+        plugin_executor = PluginExecutor(configured_plugins)
         invocation_input: DurableExecutionInvocationInput
         service_client: DurableServiceClient
 
