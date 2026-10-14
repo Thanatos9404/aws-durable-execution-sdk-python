@@ -12,6 +12,9 @@ OpenTelemetry instrumentation plugin for the [AWS Durable Execution SDK for Pyth
 - **Provider Integration**: Use the global ADOT provider or supply an explicit SDK `TracerProvider`
 - **Execution Sampling**: Resolve sampling once per invocation and apply it consistently to Workflow, Invocation, operation, and attempt spans
 
+Operation subtype attributes accept enum members or plain string labels. The
+plugin preserves the label and uses the operation's explicit type independently.
+
 ## Installation
 
 When using an ADOT or community OpenTelemetry Lambda layer:

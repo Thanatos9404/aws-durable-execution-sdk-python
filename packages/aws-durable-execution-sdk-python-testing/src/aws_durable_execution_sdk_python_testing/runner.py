@@ -152,7 +152,7 @@ class Operation:
     status: OperationStatus
     parent_id: str | None = field(default=None, kw_only=True)
     name: str | None = field(default=None, kw_only=True)
-    sub_type: OperationSubType | None = field(default=None, kw_only=True)
+    sub_type: OperationSubType | str | None = field(default=None, kw_only=True)
     start_timestamp: datetime.datetime | None = field(default=None, kw_only=True)
     end_timestamp: datetime.datetime | None = field(default=None, kw_only=True)
 

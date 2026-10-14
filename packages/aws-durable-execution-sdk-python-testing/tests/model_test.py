@@ -3552,9 +3552,9 @@ def test_events_to_operations_preserves_sub_type():
     assert operations[0].sub_type.value == "Step"
 
 
-def test_events_to_operations_invalid_sub_type():
-    """Test events_to_operations raises InvalidParameterValueException when sub_type is invalid."""
-    invalid_sub_type: str = "INVALID_SUB_TYPE"
+@pytest.mark.parametrize("invalid_sub_type", [42, True])
+def test_events_to_operations_invalid_sub_type(invalid_sub_type):
+    """Non-string subtypes are still rejected rather than retained as labels."""
     event = Event(
         event_type="StepStarted",
         event_timestamp=datetime.datetime(2023, 1, 1, 0, 0, 0, tzinfo=datetime.UTC),
@@ -3564,7 +3564,7 @@ def test_events_to_operations_invalid_sub_type():
 
     with pytest.raises(
         InvalidParameterValueException,
-        match=f"'{invalid_sub_type}' is not a valid OperationSubType",
+        match=f"{invalid_sub_type} is not a valid OperationSubType",
     ):
         events_to_operations([event])
 

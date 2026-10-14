@@ -8,7 +8,7 @@ from aws_durable_execution_sdk_python_testing.clock import real_now
 import json
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 from aws_durable_execution_sdk_python.execution import DurableExecutionInvocationOutput
 
@@ -78,6 +78,17 @@ TERMINAL_STATUSES: set[OperationStatus] = {
     OperationStatus.STOPPED,
     OperationStatus.CANCELLED,
 }
+
+
+def _parse_operation_sub_type(value: str | None) -> OperationSubType | str | None:
+    if not value:
+        return None
+    try:
+        return OperationSubType(value)
+    except ValueError:
+        if not isinstance(value, str):
+            raise
+        return value
 
 
 @dataclass(frozen=True)
@@ -1330,7 +1341,11 @@ class EventCreationContext:
 
     @property
     def sub_type(self) -> str | None:
-        return self.operation.sub_type.value if self.operation.sub_type else None
+        if not self.operation.sub_type:
+            return None
+        return cast(
+            str, getattr(self.operation.sub_type, "value", self.operation.sub_type)
+        )
 
     def get_retry_details(self) -> RetryDetails | None:
         if not self.operation.step_details or not self.operation_update:
@@ -2652,12 +2667,10 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
         )
 
         # Parse sub_type
-        sub_type: OperationSubType | None = None
-        if event.sub_type:
-            try:
-                sub_type = OperationSubType(event.sub_type)
-            except ValueError as e:
-                raise InvalidParameterValueException(str(e)) from e
+        try:
+            sub_type = _parse_operation_sub_type(event.sub_type)
+        except ValueError as e:
+            raise InvalidParameterValueException(str(e)) from e
 
         # Create base operation
         operation = Operation(
@@ -2666,7 +2679,8 @@ def events_to_operations(events: list[Event]) -> list[Operation]:
             status=status,
             name=event.name,
             parent_id=event.parent_id,
-            sub_type=sub_type,
+            # Core models still annotate enums; history readers also retain strings.
+            sub_type=cast(OperationSubType | None, sub_type),
             start_timestamp=event.event_timestamp,
         )
 
@@ -3170,9 +3184,11 @@ class CheckpointDurableExecutionRequest:
                     action=OperationAction(update_data["Action"]),
                     parent_id=update_data.get("ParentId"),
                     name=update_data.get("Name"),
-                    sub_type=OperationSubType(update_data["SubType"])
-                    if update_data.get("SubType")
-                    else None,
+                    # The current core constructor annotation is enum-only.
+                    sub_type=cast(
+                        OperationSubType | None,
+                        _parse_operation_sub_type(update_data.get("SubType")),
+                    ),
                     payload=update_data.get("Payload"),
                     error=ErrorObject.from_dict(update_data["Error"])
                     if update_data.get("Error")

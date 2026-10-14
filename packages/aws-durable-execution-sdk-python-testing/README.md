@@ -170,6 +170,14 @@ flow, pagination, and a map of the code.
 
 ## Documentation
 
+History projection and checkpoint-request parsing preserve string subtype labels,
+including labels not listed in the current core enum. Known labels still parse to
+their existing enum members. Public history results expose unknown labels as plain
+strings; code inspecting `operation.sub_type` should handle both representations.
+Creating, serializing, persisting and replaying operations remains governed by the
+installed core SDK's subtype support. This reader compatibility does not add custom
+subtype configuration or change the core enum and replay contract.
+
 ### Error Handling
 
 The testing framework implements AWS-compliant error responses that match the exact format expected by boto3 and AWS services. For detailed information about error response formats, exception types, and troubleshooting, see:

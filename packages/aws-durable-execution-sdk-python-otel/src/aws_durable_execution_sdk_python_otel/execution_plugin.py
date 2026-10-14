@@ -921,7 +921,9 @@ class ExecutionOtelPlugin(DurableInstrumentationPlugin):
         if getattr(info, "operation_type", None) is not None:
             attributes["durable.operation.type"] = info.operation_type.value
         if getattr(info, "sub_type", None) is not None:
-            attributes["durable.operation.subtype"] = info.sub_type.value
+            attributes["durable.operation.subtype"] = getattr(
+                info.sub_type, "value", info.sub_type
+            )
         # STEP user-function spans represent attempts, not durable operations.
         if (
             not (
