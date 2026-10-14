@@ -441,6 +441,21 @@ raised retroactively into the completed invocation.
 
 ### Invocation context isolation
 
+Tracing state belongs to each invocation's Context, including its trace IDs,
+span registry, deferred completions, timestamps and scope tokens. A shared plugin
+instance can therefore serve overlapping invocations without one invocation's
+cleanup clearing another's trace. Provider configuration and registration remain
+instance resources. SDK-owned worker tasks capture the selected invocation
+Context; Start/End hooks and token reset retain their existing owner and order.
+
+Completion metadata can be redelivered after a failed invocation or checkpoint
+transport attempt that has no successful response acknowledgment. There is no
+exporter acknowledgment in durable state, so this does not promise exactly-once
+telemetry across failed/redelivered invocations. Successful replay preserves
+checkpointed work; this limit is not a claim that already-checkpointed step
+bodies run again. The plugin does not use a global exported-operation cache that
+could discard a first delivery after a failed attempt.
+
 With core 2.1+, invocation hooks and the handler run on one worker in an
 invocation-local Context initialized from the host's bindings. Successful Start
 bindings are visible to later hooks, the handler and resource cleanup. The host's

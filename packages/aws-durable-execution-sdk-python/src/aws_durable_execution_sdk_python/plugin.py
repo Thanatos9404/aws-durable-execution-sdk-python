@@ -560,7 +560,9 @@ class PluginExecutor:
                     self._dispatch_plugin(plugin, info)
             else:
                 # this is called asynchronously, so plugins cannot manipulate thread local objects
-                self._executor.submit(self._dispatch_plugin, plugin, info)
+                self._executor.submit(
+                    contextvars.copy_context().run, self._dispatch_plugin, plugin, info
+                )
 
     def _run_in_invocation_context(self, invoke: Callable[[], Any]) -> Any:
         """Continue in the pre-hook Context only after a failed Start hook."""

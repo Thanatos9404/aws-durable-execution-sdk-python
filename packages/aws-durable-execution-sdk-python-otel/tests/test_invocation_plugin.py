@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -2015,7 +2016,9 @@ def test_detach_ignores_token_attached_on_another_thread():
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         executor.submit(
-            plugin.on_user_function_start, _user_function_start_info("step-1")
+            copy_context().run,
+            plugin.on_user_function_start,
+            _user_function_start_info("step-1"),
         ).result()
 
     plugin._detach_context("step-1:attempt:1")
@@ -2133,20 +2136,23 @@ def test_suspension_releases_the_scope_on_the_originating_worker():
     with ThreadPoolExecutor(max_workers=1) as worker:
 
         def suspend_on_worker() -> tuple[int, bool]:
+            worker_context = otel_context.get_current()
             plugin.on_user_function_start(_user_function_start_info(operation_id))
             attached_span_id = trace.get_current_span().get_span_context().span_id
             plugin.on_user_function_end(_user_function_incomplete_info(operation_id))
             return (
                 attached_span_id,
-                trace.get_current_span().get_span_context().is_valid,
+                otel_context.get_current() == worker_context,
             )
 
-        attached_span_id, span_still_current = worker.submit(suspend_on_worker).result()
+        attached_span_id, context_restored = worker.submit(
+            copy_context().run, suspend_on_worker
+        ).result()
         suspended_span = plugin._get_span(span_key)
 
         # The scope was released on the worker, and its span is left open.
         assert attached_span_id != 0
-        assert span_still_current is False
+        assert context_restored is True
         assert span_key not in plugin._context_tokens
         assert suspended_span is not None
         assert {s.name for s in exporter.get_finished_spans()} == {
