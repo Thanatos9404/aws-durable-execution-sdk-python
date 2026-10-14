@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Match the OTel provider's existing default budget. Some processors ignore
 # that cooperative budget, so the SDK bounds its own wait independently.
 _FLUSH_TIMEOUT_SECONDS = 30.0
-_lock = threading.Lock()
+_lock = threading.Condition()
 
 
 @dataclass
@@ -42,6 +42,7 @@ def _run(flush: Callable[[], object], attempt: _Attempt) -> None:
             late = attempt.timed_out
             if not late and _active is attempt:
                 _active = None
+                _lock.notify_all()
             attempt.done.set()
         if late and attempt.error is not None:
             logger.error(
@@ -58,6 +59,7 @@ def _run(flush: Callable[[], object], attempt: _Attempt) -> None:
         with _lock:
             if _active is attempt:
                 _active = None
+                _lock.notify_all()
 
 
 def flush_provider(flush: Callable[[], object]) -> bool:
@@ -65,20 +67,26 @@ def flush_provider(flush: Callable[[], object]) -> bool:
 
     Start/End and ContextVar-token cleanup stay on their existing owner. Only
     the supplied provider method runs elsewhere, using the post-cleanup Context
-    snapshot. Busy/expired attempts return False; they are never cancelled.
+    snapshot. Admission and completion share one absolute deadline. Expired
+    requests return False without queueing more work; active I/O is never cancelled.
     This does not bound synchronous span processors' earlier ``on_end`` calls,
     application-owned provider shutdown, or exporter transport I/O itself.
     """
     global _active  # noqa: PLW0603
     deadline = time.monotonic() + _FLUSH_TIMEOUT_SECONDS
     with _lock:
-        if _active is not None:
-            attempt = None
-        else:
+        while _active is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _lock.wait(remaining)
+        if _active is None and time.monotonic() < deadline:
             attempt = _Attempt()
             _active = attempt
+        else:
+            attempt = None
     if attempt is None:
-        logger.warning("Provider flush is still running; skipping another flush")
+        logger.warning("Provider flush admission exceeded the caller wait budget")
         return False
 
     owner_context = contextvars.copy_context()
@@ -93,6 +101,7 @@ def flush_provider(flush: Callable[[], object]) -> bool:
         with _lock:
             if _active is attempt:
                 _active = None
+                _lock.notify_all()
         raise
 
     completed = attempt.done.wait(max(0.0, deadline - time.monotonic()))

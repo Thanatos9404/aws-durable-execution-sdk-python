@@ -425,9 +425,11 @@ cleanup stay on their original worker and Context. The I/O receives a snapshot
 of that post-cleanup Context.
 
 There is at most one outstanding provider flush in the process and no pending
-queue. A timeout does not cancel the exporter or free that slot. Later requests
-skip flushing with a warning until the earlier call actually finishes, including
-requests using another provider. A failed or skipped flush is not an export
+I/O queue. Concurrent requests, including requests using another provider, wait
+for admission within the same absolute deadline used for completion. A timeout
+does not cancel the exporter or free its slot. A request whose budget expires
+before admission returns with a warning without starting more work.
+A failed or skipped flush is not an export
 acknowledgment, and late exports may continue. Applications still own exporter
 transport timeouts and provider shutdown. This bound does not cover synchronous
 span-processor `on_end` work that runs before flushing.

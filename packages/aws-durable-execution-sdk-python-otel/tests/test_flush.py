@@ -3,8 +3,12 @@
 import contextvars
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from aws_durable_execution_sdk_python_otel import _flush
 
@@ -55,6 +59,101 @@ def test_timeout_retains_one_worker_and_rejects_new_work(monkeypatch):
         _wait_idle()
     monkeypatch.setattr(_flush, "_FLUSH_TIMEOUT_SECONDS", 1.0)
     assert _flush.flush_provider(lambda: True) is True
+
+
+def test_healthy_distinct_providers_wait_for_admission():
+    exporting = threading.Event()
+    release = threading.Event()
+    second_called = threading.Event()
+
+    class GatedExporter(InMemorySpanExporter):
+        def export(self, spans):
+            exporting.set()
+            assert release.wait(3)
+            return super().export(spans)
+
+    first_exporter = GatedExporter()
+    second_exporter = InMemorySpanExporter()
+    first_provider = TracerProvider()
+    second_provider = TracerProvider()
+    first_provider.add_span_processor(
+        BatchSpanProcessor(first_exporter, schedule_delay_millis=60000)
+    )
+    second_provider.add_span_processor(
+        BatchSpanProcessor(second_exporter, schedule_delay_millis=60000)
+    )
+    with first_provider.get_tracer("first").start_as_current_span("first"):
+        pass
+    with second_provider.get_tracer("second").start_as_current_span("second"):
+        pass
+
+    def second_flush():
+        second_called.set()
+        return _flush.flush_provider(second_provider.force_flush)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as callers:
+            first = callers.submit(_flush.flush_provider, first_provider.force_flush)
+            try:
+                assert exporting.wait(1)
+                second = callers.submit(second_flush)
+                assert second_called.wait(1)
+                time.sleep(0.03)
+                assert not second.done(), (
+                    "A healthy caller was skipped instead of waiting"
+                )
+            finally:
+                release.set()
+            assert first.result(timeout=2) is True
+            assert second.result(timeout=2) is True
+        assert [span.name for span in first_exporter.get_finished_spans()] == ["first"]
+        assert [span.name for span in second_exporter.get_finished_spans()] == [
+            "second"
+        ]
+    finally:
+        release.set()
+        first_provider.shutdown()
+        second_provider.shutdown()
+
+
+def test_admission_and_execution_share_the_same_deadline():
+    first_entered = threading.Event()
+    first_release = threading.Event()
+    second_called = threading.Event()
+    second_entered = threading.Event()
+    second_release = threading.Event()
+
+    def first_io():
+        first_entered.set()
+        assert first_release.wait(3)
+        return True
+
+    def second_io():
+        second_entered.set()
+        assert second_release.wait(3)
+        return True
+
+    def second_call():
+        second_called.set()
+        return _flush.flush_provider(second_io)
+
+    with ThreadPoolExecutor(max_workers=2) as callers:
+        first = callers.submit(_flush.flush_provider, first_io)
+        try:
+            assert first_entered.wait(1)
+            second = callers.submit(second_call)
+            assert second_called.wait(1)
+            # Spend most of the existing one-second budget on admission.
+            time.sleep(0.6)
+            first_release.set()
+            assert first.result(timeout=1) is True
+            assert second_entered.wait(1)
+            # A reset one-second I/O budget would still be blocked here.
+            assert second.result(timeout=0.65) is False
+        finally:
+            first_release.set()
+            second_release.set()
+    _wait_idle()
 
 
 @pytest.mark.parametrize("result", [True, False, None])
