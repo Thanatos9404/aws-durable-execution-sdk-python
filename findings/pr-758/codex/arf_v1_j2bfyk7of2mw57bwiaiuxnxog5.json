@@ -1,0 +1,1 @@
+{"finding_digest":"4e825c2bee2e996efc3640114bb6ee377980566a1107bd2e8c1e00154dfe9ba3","finding_id":"arf_v1_j2bfyk7of2mw57bwiaiuxnxog5","identity_key":"otel/invocation_plugin.py::on_invocation_start::replay-children-parent-segment","pull_request_number":758,"repository":{"full_name":"aws/aws-durable-execution-sdk-python","id":1052903600},"reviewer":"codex","schema_version":1}
