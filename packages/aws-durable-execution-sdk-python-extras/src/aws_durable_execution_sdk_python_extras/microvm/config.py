@@ -25,6 +25,45 @@ MAX_MICROVM_DURATION_SECONDS = 28_800
 
 
 @dataclass(frozen=True, kw_only=True)
+class MicrovmRequestConfig:
+    """How :func:`microvm` delivers a job over HTTP.
+
+    An HTTP delivery POSTs the job document to a route of the application in
+    the MicroVM. The route must answer with a 2xx status at once, and run the
+    job in the background.
+    """
+
+    path: str | None = None
+    """The route path, for example ``/clone-build``. It must start with ``/``.
+
+    ``None`` sends the job to :data:`DEFAULT_MICROVM_JOB_PATH`. The worker
+    package serves that path with its ``handler``. A path sends the job to one
+    of your own routes instead, and it selects HTTP delivery for every input
+    size. The worker runs a job that arrives in the ``run`` hook with its
+    ``handler``, not with a route. So a job for a route must go over HTTP.
+    """
+
+    port: int | None = None
+    """The port of the route in the MicroVM, between 1 and 65535.
+
+    ``None`` uses port 8080, the port that the MicroVM endpoint forwards to by
+    default. The port applies only when the job goes over HTTP. Lambda sends
+    the ``run`` hook to the port in the image's hook configuration, not to
+    this port. So without a ``path``, the port is used only for an input too
+    large for the ``run`` hook.
+    """
+
+    retry_window: Duration | None = None
+    """How long the request step retries inside one step attempt.
+
+    ``None`` means 60 seconds. It must be between 1 second and 10 minutes.
+    After the window, the step fails the attempt, and the step retry strategy
+    takes over. The step also stops 10 seconds before the Lambda invocation
+    times out.
+    """
+
+
+@dataclass(frozen=True, kw_only=True)
 class MicrovmConfig:
     """The MicroVM, and how long to wait for its result.
 
@@ -79,9 +118,16 @@ class MicrovmConfig:
     ingress_network_connectors: tuple[str, ...] | None = None
     """Ingress network connector ARNs.
 
-    ``None`` gets the Lambda-provided ``NO_INGRESS`` connector, because the
-    job arrives in the ``run`` hook and needs no inbound connection. An empty
-    tuple sends no ingress connector.
+    ``None`` gets a Lambda-provided connector that depends on the delivery:
+
+    1. ``NO_INGRESS`` when the job goes in the ``run`` hook. The job then
+       needs no inbound connection.
+    2. ``ALL_INGRESS`` when the job goes over HTTP. The request must reach
+       the MicroVM's endpoint.
+
+    An empty tuple sends no ingress connector. Connectors that you set must
+    allow ingress whenever an input can exceed the ``run`` hook limit, because
+    such an input goes over HTTP.
     """
 
     egress_network_connectors: tuple[str, ...] | None = None
@@ -96,10 +142,19 @@ class MicrovmConfig:
     """The ``logging`` member of ``RunMicrovm``. Defaults to the service
     default."""
 
-    retry_strategy: Callable[[Exception, int], RetryDecision] | None = None
-    """The step retry strategy of the launch and terminate steps.
+    request: MicrovmRequestConfig | None = None
+    """How to deliver the job over HTTP.
 
-    Defaults to :func:`default_microvm_retry_strategy`.
+    ``None`` delivers a job in the ``run`` hook when it fits, and over HTTP to
+    :data:`DEFAULT_MICROVM_JOB_PATH` on port 8080 when it does not.
+    """
+
+    retry_strategy: Callable[[Exception, int], RetryDecision] | None = None
+    """The step retry strategy of the launch, request, and terminate steps.
+
+    It is the second retry tier. The first tier retries inside one step
+    attempt: the boto3 client retries each call, and the request step retries
+    the POST. Defaults to :func:`default_microvm_retry_strategy`.
     """
 
     client: LambdaMicrovmsClient | None = None

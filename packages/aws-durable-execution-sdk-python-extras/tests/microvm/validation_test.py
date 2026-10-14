@@ -12,7 +12,11 @@ import pytest
 from aws_durable_execution_sdk_python.config import Duration
 from aws_durable_execution_sdk_python.exceptions import ValidationError
 
-from aws_durable_execution_sdk_python_extras.microvm import MicrovmConfig, microvm
+from aws_durable_execution_sdk_python_extras.microvm import (
+    MicrovmConfig,
+    MicrovmRequestConfig,
+    microvm,
+)
 from aws_durable_execution_sdk_python_extras.microvm import operation
 
 
@@ -55,6 +59,51 @@ def config(**fields: Any) -> MicrovmConfig:
             "build",
             {"heartbeat_timeout": Duration(0)},
             "heartbeat_timeout must be at least 1 second",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(path="job")},
+            'the request path must be a string that starts with "/"',
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(path=7)},  # type: ignore[arg-type]
+            'the request path must be a string that starts with "/"',
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(path="/aws/lambda-microvms/run")},
+            "must not use the lifecycle hook prefix /aws/lambda-microvms/",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(port=0)},
+            "the request port must be an integer between 1 and 65535",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(port=65_536)},
+            "the request port must be an integer between 1 and 65535",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(port=True)},
+            "the request port must be an integer between 1 and 65535",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(port=8080.0)},  # type: ignore[arg-type]
+            "the request port must be an integer between 1 and 65535",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(retry_window=Duration(0))},
+            "the request retry_window must be between 1 second and 10 minutes",
+        ),
+        (
+            "build",
+            {"request": MicrovmRequestConfig(retry_window=Duration.from_seconds(601))},
+            "the request retry_window must be between 1 second and 10 minutes",
         ),
     ],
 )
@@ -136,3 +185,36 @@ def test_creates_one_default_client_per_region(
 def test_takes_the_input_and_the_config_by_keyword_only() -> None:
     with pytest.raises(TypeError, match="positional argument"):
         microvm(NoOperations(), "build", {}, config())  # type: ignore[arg-type, misc]
+
+
+class LambdaContext:
+    def __init__(self, read: Any) -> None:
+        self.get_remaining_time_in_millis = read
+
+
+def boom() -> int:
+    msg = "no deadline here"
+    raise RuntimeError(msg)
+
+
+@pytest.mark.parametrize(
+    ("lambda_context", "expected"),
+    [
+        (LambdaContext(lambda: 12_500), 12.5),
+        (LambdaContext(lambda: 2.5), 0.0025),
+        (None, None),
+        (object(), None),
+        (LambdaContext("not callable"), None),
+        (LambdaContext(boom), None),
+        (LambdaContext(lambda: math.inf), None),
+        (LambdaContext(lambda: math.nan), None),
+        (LambdaContext(lambda: "12"), None),
+        (LambdaContext(lambda: True), None),
+    ],
+)
+def test_reads_the_remaining_time_or_reports_no_deadline(
+    lambda_context: Any, expected: float | None
+) -> None:
+    context: Any = type("Context", (), {"lambda_context": lambda_context})()
+
+    assert operation._remaining_seconds(context)() == expected  # noqa: SLF001
