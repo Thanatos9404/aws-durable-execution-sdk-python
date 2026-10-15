@@ -24,6 +24,9 @@ from aws_durable_execution_sdk_python.lambda_service import (
 )
 
 from aws_durable_execution_sdk_python_testing.clock import real_now
+from aws_durable_execution_sdk_python_testing.operation_state import (
+    prune_replay_children,
+)
 from aws_durable_execution_sdk_python_testing.exceptions import (
     IllegalStateException,
     InvalidParameterValueException,
@@ -854,10 +857,9 @@ class OperationPaginatorState:
         ``max_size_bytes`` and, when given, ``max_items``. Second element
         of the tuple is a marker for the next page, or ``None`` when the
         page fits everything."""
-        start_idx = self._resolve_marker(marker)
-        return self._walk_page(
-            self.snapshot_operations, start_idx, max_size_bytes, max_items
-        )
+        operations = prune_replay_children(self.snapshot_operations)
+        start_idx = self._resolve_marker(marker, len(operations))
+        return self._walk_page(operations, start_idx, max_size_bytes, max_items)
 
     def unseen_operations(self) -> list[Operation]:
         """Operations whose ``operation_last_touched_seq`` is strictly
@@ -919,14 +921,21 @@ class OperationPaginatorState:
         # floor at 1 to guarantee pagination always advances.
         return max(self.execution.operation_size_bytes.get(op.operation_id, 0), 1)
 
-    def _resolve_marker(self, marker: str | None) -> int:
+    def _resolve_marker(
+        self, marker: str | None, operation_count: int | None = None
+    ) -> int:
         if marker is None:
             return 0
         seq, idx = self._decode_marker(marker)
         if seq != self.pinned_token_sequence:
             msg = "Invalid marker"
             raise InvalidParameterValueException(msg)
-        if idx < 0 or idx > len(self.snapshot_operations):
+        count = (
+            len(self.snapshot_operations)
+            if operation_count is None
+            else operation_count
+        )
+        if idx < 0 or idx > count:
             msg = "Invalid marker"
             raise InvalidParameterValueException(msg)
         return idx

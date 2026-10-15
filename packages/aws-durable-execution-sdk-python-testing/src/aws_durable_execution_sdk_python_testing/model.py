@@ -1,6 +1,9 @@
 """Model classes for the web API."""
 
 from __future__ import annotations
+from aws_durable_execution_sdk_python_testing.operation_state import (
+    operation_state_to_dict,
+)
 
 import datetime
 
@@ -572,7 +575,7 @@ class GetDurableExecutionStateResponse:
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "Operations": [op.to_dict() for op in self.operations]
+            "Operations": [operation_state_to_dict(op) for op in self.operations]
         }
         if self.next_marker is not None:
             result["NextMarker"] = self.next_marker
@@ -3157,7 +3160,7 @@ class CheckpointUpdatedExecutionState:
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "Operations": [op.to_dict() for op in self.operations]
+            "Operations": [operation_state_to_dict(op) for op in self.operations]
         }
         if self.next_marker is not None:
             result["NextMarker"] = self.next_marker

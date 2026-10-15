@@ -1,4 +1,4 @@
-"""A terminal input update remains observable when its completed child is skipped."""
+"""Visible terminal input updates are delivered once with real retained children."""
 
 import json
 import logging
@@ -39,7 +39,7 @@ from aws_durable_execution_sdk_python_otel import (
         (ExecutionOtelPlugin, False, True),
     ],
 )
-def test_completed_child_callback_notifies_before_input_ack(
+def test_retained_child_callback_notifies_before_input_ack(
     view, filesystem, failed_delivery, tmp_path, monkeypatch, caplog
 ):
     monkeypatch.delenv("DURABLE_EXECUTION_PLUGINS", raising=False)
@@ -50,6 +50,7 @@ def test_completed_child_callback_notifies_before_input_ack(
     )
     starts, ends, notifications, child_calls, marker_calls = [], [], [], [], []
     attempts = []
+    saved_child_calls = []
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -72,11 +73,20 @@ def test_completed_child_callback_notifies_before_input_ack(
             if info.name in ("a", "b"):
                 notifications.append((len(starts), info))
 
+    def saved_child(_step):
+        saved_child_calls.append(1)
+        return "saved"
+
     def child(context):
         child_calls.append(1)
-        return context.create_callback(
+        callback_id = context.create_callback(
             name="b", config=CallbackConfig(serdes=JsonSerDes())
         ).callback_id
+        assert context.step(saved_child, name="saved-child") == "saved"
+        # The real service hides descendants of a completed ordinary context.
+        # A real large result makes this context use ReplayChildren, retaining
+        # B's metadata without injecting input state or hook notifications.
+        return {"id": callback_id, "large": "x" * (300 * 1024)}
 
     @durable_step
     def marker(_context, result):
@@ -87,7 +97,7 @@ def test_completed_child_callback_notifies_before_input_ack(
         a = context.create_callback(
             name="a", config=CallbackConfig(serdes=JsonSerDes())
         )
-        b_id = context.run_in_child_context(child, name="cached-child")
+        b_id = context.run_in_child_context(child, name="cached-child")["id"]
         result = context.step(marker(a.result()), name="after-a")
         return {"a": result, "b_id": b_id}
 
@@ -138,7 +148,8 @@ def test_completed_child_callback_notifies_before_input_ack(
         assert result.status.value == "SUCCEEDED"
         assert json.loads(result.result) == {"a": "A", "b_id": b_id}
         assert [i.status.value for i in ends] == ["PENDING", "PENDING", "SUCCEEDED"]
-        assert child_calls == [1] and marker_calls == [1]
+        assert child_calls == [1, 1, 1] and saved_child_calls == [1]
+        assert marker_calls == [1]
         assert len(attempts) == (4 if failed_delivery else 3)
         b_info = next(
             info for info in starts[1].updated_operations.values() if info.name == "b"
@@ -180,6 +191,8 @@ def test_completed_child_callback_notifies_before_input_ack(
                         "result_b_matches_issued": True,
                         "invocation_statuses": [i.status.value for i in ends],
                         "child_calls": len(child_calls),
+                        "saved_child_calls": len(saved_child_calls),
+                        "retention_via_public_large_result": True,
                         "marker_calls": len(marker_calls),
                         "physical_attempts": len(attempts),
                         "failed_before_SDK": failed_delivery,
@@ -193,7 +206,7 @@ def test_completed_child_callback_notifies_before_input_ack(
                         ],
                         "b_terminal_spans": len(terminal_spans),
                         "hook_errors": hook_errors,
-                        "original_parent_span_ids": [
+                        "parent_segment_span_ids": [
                             s.context.span_id for s in parent_spans
                         ],
                         "b_terminal_parent_ids": [
@@ -217,9 +230,23 @@ def test_completed_child_callback_notifies_before_input_ack(
         assert b_ends[0][1].parent_id == b_info.parent_id
         assert not b_ends[0][1].is_replayed
         assert len(terminal_spans) == 1
-        assert len(parent_spans) == 1
         assert terminal_spans[0].parent is not None
-        assert terminal_spans[0].parent.span_id == parent_spans[0].context.span_id
+        if view is ExecutionOtelPlugin:
+            assert len(parent_spans) == 1
+            assert terminal_spans[0].parent.span_id == parent_spans[0].context.span_id
+        else:
+            assert len(parent_spans) == 3
+            assert len({span.context.span_id for span in parent_spans}) == 3
+            invocations = [
+                span
+                for span in exporter.get_finished_spans()
+                if span.name == "Invocation"
+            ]
+            assert len(invocations) == 3
+            assert [span.parent.span_id for span in parent_spans] == [
+                span.context.span_id for span in invocations
+            ]
+            assert terminal_spans[0].parent.span_id == parent_spans[1].context.span_id
         assert not hook_errors
     finally:
         provider.shutdown()

@@ -448,19 +448,23 @@ cleanup clearing another's trace. Provider configuration and registration remain
 instance resources. SDK-owned worker tasks capture the selected invocation
 Context; Start/End hooks and token reset retain their existing owner and order.
 
-Terminal input updates can be observed even when replay skips their completed
-child context. Known completed context metadata is retained from the full input
-snapshot, including parents whose descendants are still pending at Start and
-complete in a later checkpoint. A child that finishes during the current invocation retains its
-actual parent context for later descendant checkpoint deliveries. In Invocation
-view, input completions first wait for the handler to create any current replay
-segment, including `ReplayChildren` for large results. At invocation End, only
-completions still lacking that segment use a known completed input parent. When the input contains that checkpointed parent's
-terminal metadata, the views reference its original logical span identity without
-re-exporting the parent. Missing or nonterminal parents are deferred until their
-actual span is available; unresolved parentage is reported after cleanup instead
-of inventing a root parent. Draining this private queue does not call the public
-operation-end hook again.
+Visible terminal input updates are delivered after all Start hooks. The service
+omits descendants of completed contexts unless their ancestors retain children
+through `ReplayChildren`; an `UpdatedOperationIds` entry alone does not provide
+missing operation metadata. The SDK does not synthesize a hook or a span from
+that missing record. Public input-delivery tests use a real large child result
+to retain metadata, while still asserting one saved-step execution and terminal
+export with the correct parent in each view.
+
+Known completed context metadata is retained from the full visible input
+snapshot for descendant completions delivered by later checkpoint responses.
+A child that finishes during the invocation retains its actual non-recording
+parent context until cleanup. In Invocation view, completions wait for any
+current replay segment, including a large-result ReplayChildren parent. Only
+at End does a completion still lacking a current segment use a known completed
+input parent's identity. Missing or nonterminal parents remain deferred;
+unresolved parentage is reported after cleanup. No root parent or missing
+metadata is invented, and queue draining does not re-enter a public hook.
 
 Completion metadata can be redelivered after a failed invocation or checkpoint
 transport attempt that has no successful response acknowledgment. There is no

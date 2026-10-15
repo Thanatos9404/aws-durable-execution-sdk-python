@@ -165,11 +165,15 @@ def test_late_callback_keeps_completed_or_replayed_parent(
             assert all(
                 info.name != "b" for info in starts[1].updated_operations.values()
             )
-            pending_b = next(
-                info for info in starts[1].operations.values() if info.name == "b"
+            # Service input prunes B even while it is STARTED. Its later
+            # checkpoint response still carries the actual completion unchanged.
+            assert all(info.name != "b" for info in starts[1].operations.values())
+            completed_parent = next(
+                info
+                for info in starts[1].operations.values()
+                if info.name == "returned-child"
             )
-            assert pending_b.status.value == "STARTED"
-            assert starts[1].operations[pending_b.parent_id].status.value == "SUCCEEDED"
+            assert completed_parent.status.value == "SUCCEEDED"
         hook_errors = [
             r.getMessage()
             for r in caplog.records
