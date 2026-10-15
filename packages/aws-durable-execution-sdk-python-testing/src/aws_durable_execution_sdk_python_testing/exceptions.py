@@ -109,6 +109,10 @@ class DurableFunctionsTestError(Exception):
     """Base class for testing errors."""
 
 
+class InvalidInvocationOutputError(DurableFunctionsTestError):
+    """The handler's output cannot be parsed as an invocation output."""
+
+
 # endregion Testing
 
 

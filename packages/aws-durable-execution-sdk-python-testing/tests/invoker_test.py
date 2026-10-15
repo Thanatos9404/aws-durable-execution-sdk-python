@@ -271,6 +271,56 @@ def test_in_process_invoker_invoke():
     assert isinstance(call_args[1], LambdaContext)
 
 
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        pytest.param(
+            {"Result": "result"},
+            "Invalid invocation output: None is not a valid InvocationStatus",
+            id="missing-status",
+        ),
+        pytest.param(
+            {"Status": "DONE"},
+            "Invalid invocation output: 'DONE' is not a valid InvocationStatus",
+            id="unknown-status",
+        ),
+        pytest.param(
+            {"Status": "FAILED", "Error": "boom"},
+            "Invalid invocation output: 'str' object has no attribute 'get'",
+            id="error-not-an-object",
+        ),
+        pytest.param(
+            "SUCCEEDED",
+            "Invalid invocation output: 'str' object has no attribute 'get'",
+            id="not-an-object",
+        ),
+        pytest.param(
+            None,
+            "Invalid invocation output: 'NoneType' object has no attribute 'get'",
+            id="none",
+        ),
+    ],
+)
+def test_in_process_invoker_rejects_an_output_it_cannot_parse(output, message):
+    """An output the service cannot parse raises InvalidInvocationOutputError,
+    which the executor fails the execution on instead of retrying."""
+    from aws_durable_execution_sdk_python_testing.exceptions import (
+        InvalidInvocationOutputError,
+    )
+
+    invoker = InProcessInvoker(Mock(return_value=output), Mock())
+    input_data = DurableExecutionInvocationInput(
+        durable_execution_arn="test-arn",
+        checkpoint_token="test-token",  # noqa: S106
+        initial_execution_state=InitialExecutionState(operations=[], next_marker=""),
+    )
+
+    with pytest.raises(InvalidInvocationOutputError) as exc_info:
+        invoker.invoke("test-function", input_data)
+
+    assert str(exc_info.value) == message
+
+
 def test_lambda_invoker_init():
     """Test LambdaInvoker initialization."""
     lambda_client = Mock()
@@ -837,6 +887,55 @@ def test_lambda_invoker_invoke_function_error():
         DurableFunctionsTestError, match="Lambda invocation failed with status 200"
     ):
         invoker.invoke("test-function", input_data)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param(
+            b"not json",
+            "Invalid invocation output: Expecting value: line 1 column 1 (char 0)",
+            id="not-json",
+        ),
+        pytest.param(
+            b'{"Status": "DONE"}',
+            "Invalid invocation output: 'DONE' is not a valid InvocationStatus",
+            id="unknown-status",
+        ),
+        pytest.param(
+            b'["SUCCEEDED"]',
+            "Invalid invocation output: 'list' object has no attribute 'get'",
+            id="not-an-object",
+        ),
+    ],
+)
+def test_lambda_invoker_rejects_an_output_it_cannot_parse(payload, message):
+    """A payload the service cannot parse raises InvalidInvocationOutputError,
+    not the DurableFunctionsTestError of a failed invocation."""
+    from aws_durable_execution_sdk_python_testing.exceptions import (
+        InvalidInvocationOutputError,
+    )
+
+    lambda_client, _ = _create_mock_lambda_client_with_exceptions()
+    mock_payload = Mock()
+    mock_payload.read.return_value = payload
+    lambda_client.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": mock_payload,
+        "ResponseMetadata": {"HTTPHeaders": {"x-amzn-RequestId": "test-request-id"}},
+    }
+
+    invoker = LambdaInvoker(lambda_client)
+    input_data = DurableExecutionInvocationInput(
+        durable_execution_arn="test-arn",
+        checkpoint_token="test-token",  # noqa: S106
+        initial_execution_state=InitialExecutionState(operations=[], next_marker=""),
+    )
+
+    with pytest.raises(InvalidInvocationOutputError) as exc_info:
+        invoker.invoke("test-function", input_data)
+
+    assert str(exc_info.value) == message
 
 
 def _create_mock_lambda_client_with_exceptions():

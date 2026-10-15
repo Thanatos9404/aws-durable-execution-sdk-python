@@ -21,6 +21,7 @@ from aws_durable_execution_sdk_python_testing.checkpoint.processor import (
 )
 from aws_durable_execution_sdk_python_testing.exceptions import (
     DurableFunctionsTestError,
+    InvalidInvocationOutputError,
     InvalidParameterValueException,
     ResourceNotFoundException,
 )
@@ -106,6 +107,36 @@ class InvokeResponse:
 
     invocation_output: DurableExecutionInvocationOutput
     request_id: str
+
+    @classmethod
+    def from_output(cls, output: Any, request_id: str) -> InvokeResponse:
+        """Create from the value a handler returned.
+
+        Raises:
+            InvalidInvocationOutputError: If the value is not an object with
+                a known ``Status`` and, if present, an object ``Error``.
+        """
+        try:
+            invocation_output = DurableExecutionInvocationOutput.from_dict(output)
+        except (AttributeError, TypeError, ValueError) as e:
+            msg: str = f"Invalid invocation output: {e}"
+            raise InvalidInvocationOutputError(msg) from e
+        return cls(invocation_output=invocation_output, request_id=request_id)
+
+    @classmethod
+    def from_payload(cls, payload: str, request_id: str) -> InvokeResponse:
+        """Create from the JSON payload a Lambda invocation returned.
+
+        Raises:
+            InvalidInvocationOutputError: If the payload is not JSON or not
+                a valid invocation output.
+        """
+        try:
+            output: Any = json.loads(payload)
+        except ValueError as e:
+            msg: str = f"Invalid invocation output: {e}"
+            raise InvalidInvocationOutputError(msg) from e
+        return cls.from_output(output, request_id)
 
 
 # Values the in-process Lambda context reports when the caller gives none.
@@ -261,10 +292,7 @@ class InProcessInvoker(Invoker):
         )
         handler: Callable = self._resolve_handler(function_name)
         response_dict = handler(input_with_client, context)
-        output = DurableExecutionInvocationOutput.from_dict(response_dict)
-        return InvokeResponse(
-            invocation_output=output, request_id=context.aws_request_id
-        )
+        return InvokeResponse.from_output(response_dict, context.aws_request_id)
 
     def update_endpoint(self, endpoint_url: str, region_name: str) -> None:
         """No-op for in-process invoker."""
@@ -459,6 +487,7 @@ class LambdaInvoker(Invoker):
         Raises:
             ResourceNotFoundException: If function does not exist
             InvalidParameterValueException: If parameters are invalid
+            InvalidInvocationOutputError: If the function's output cannot be parsed
             DurableFunctionsTestError: For other invocation failures
         """
 
@@ -496,9 +525,8 @@ class LambdaInvoker(Invoker):
                 msg = f"Lambda invocation failed with status {status_code}: {error_payload}"
                 raise DurableFunctionsTestError(msg)
 
-            # Parse response payload
+            # Read response payload
             response_payload = response["Payload"].read().decode("utf-8")
-            response_dict = json.loads(response_payload)
 
             # Extract request ID from response headers (x-amzn-RequestId or x-amzn-request-id)
             headers = response.get("ResponseMetadata", {}).get("HTTPHeaders", {})
@@ -507,10 +535,6 @@ class LambdaInvoker(Invoker):
                 or headers.get("x-amzn-request-id")
                 or f"local-{uuid4()}"
             )
-
-            # Convert to DurableExecutionInvocationOutput
-            output = DurableExecutionInvocationOutput.from_dict(response_dict)
-            return InvokeResponse(invocation_output=output, request_id=request_id)
 
         except client.exceptions.ResourceNotFoundException as e:
             msg = f"Function not found: {function_name}"
@@ -565,3 +589,7 @@ class LambdaInvoker(Invoker):
                 raise DurableFunctionsTestError(msg) from e
             msg = f"Unexpected error during Lambda invocation: {e}"
             raise DurableFunctionsTestError(msg) from e
+
+        # Parsed outside the try: an output the service cannot parse fails
+        # the execution, so it must not be reported as a failed invocation.
+        return InvokeResponse.from_payload(response_payload, request_id)
