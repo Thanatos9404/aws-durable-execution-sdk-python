@@ -319,6 +319,7 @@ def test_in_process_invoker_rejects_an_output_it_cannot_parse(output, message):
         invoker.invoke("test-function", input_data)
 
     assert str(exc_info.value) == message
+    assert exc_info.value.request_id == "test-invoke-12345"
 
 
 def test_lambda_invoker_init():
@@ -936,6 +937,7 @@ def test_lambda_invoker_rejects_an_output_it_cannot_parse(payload, message):
         invoker.invoke("test-function", input_data)
 
     assert str(exc_info.value) == message
+    assert exc_info.value.request_id == "test-request-id"
 
 
 def _create_mock_lambda_client_with_exceptions():

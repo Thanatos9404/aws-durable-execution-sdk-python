@@ -120,7 +120,7 @@ class InvokeResponse:
             invocation_output = DurableExecutionInvocationOutput.from_dict(output)
         except (AttributeError, TypeError, ValueError) as e:
             msg: str = f"Invalid invocation output: {e}"
-            raise InvalidInvocationOutputError(msg) from e
+            raise InvalidInvocationOutputError(msg, request_id) from e
         return cls(invocation_output=invocation_output, request_id=request_id)
 
     @classmethod
@@ -135,7 +135,7 @@ class InvokeResponse:
             output: Any = json.loads(payload)
         except ValueError as e:
             msg: str = f"Invalid invocation output: {e}"
-            raise InvalidInvocationOutputError(msg) from e
+            raise InvalidInvocationOutputError(msg, request_id) from e
         return cls.from_output(output, request_id)
 
 

@@ -674,6 +674,41 @@ def test_pending_without_pending_operations_recovers_on_a_valid_output():
     assert final.consecutive_failed_invocation_attempts == 0
 
 
+@pytest.mark.parametrize(
+    "parse",
+    [
+        pytest.param(
+            lambda request_id: InvokeResponse.from_output(["SUCCEEDED"], request_id),
+            id="from-output",
+        ),
+        pytest.param(
+            lambda request_id: InvokeResponse.from_payload("not json", request_id),
+            id="from-payload",
+        ),
+    ],
+)
+def test_unparsed_output_keeps_the_request_id(parse):
+    """An output the invoker cannot parse fails the execution, and the
+    recorded invocation keeps the request ID of that invocation."""
+    store = InMemoryExecutionStore()
+    invoker = Mock()
+    invoker.create_invocation_input.return_value = Mock()
+    invoker.invoke.side_effect = lambda *_args, **_kwargs: parse("request-1")
+
+    execution = Execution.new(_make_start_input())
+    execution.start()
+    store.save(execution)
+    arn = execution.durable_execution_arn
+
+    executor = Executor(store, Mock(), invoker, Mock())
+
+    asyncio.run(executor._invoke_handler(arn)())  # noqa: SLF001
+
+    final = store.load(arn)
+    assert final.close_status is ExecutionStatus.FAILED
+    assert [c.request_id for c in final.invocation_completions] == ["request-1"]
+
+
 # endregion
 # region: earliest pending
 

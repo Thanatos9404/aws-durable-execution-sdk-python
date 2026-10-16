@@ -1647,11 +1647,12 @@ class Executor(ExecutionObserver):
         error: ErrorObject,
         invocation_start: datetime,
         invocation_end: datetime,
+        request_id: str | None,
     ) -> None:
         """Fail the execution for an output the invoker could not parse."""
         execution = self._store.load(execution_arn)
         execution.record_invocation_completion(
-            invocation_start, invocation_end, str(uuid.uuid4())
+            invocation_start, invocation_end, request_id or str(uuid.uuid4())
         )
         self._store.save(execution)
         if execution.is_complete:
@@ -1776,6 +1777,7 @@ class Executor(ExecutionObserver):
                     "[%s] Lambda output validation failure: %s", execution_arn, err
                 )
                 error_obj = self._invalid_output_error(str(err))
+                request_id = err.request_id
                 await asyncio.wrap_future(
                     self._registry.submit(
                         execution_arn,
@@ -1785,6 +1787,7 @@ class Executor(ExecutionObserver):
                                 error_obj,
                                 invocation_start,
                                 invocation_end,
+                                request_id,
                             )
                         ),
                     )
