@@ -682,8 +682,12 @@ def test_pending_without_pending_operations_recovers_on_a_valid_output():
             id="from-output",
         ),
         pytest.param(
-            lambda request_id: InvokeResponse.from_payload("not json", request_id),
+            lambda request_id: InvokeResponse.from_payload(b"not json", request_id),
             id="from-payload",
+        ),
+        pytest.param(
+            lambda request_id: InvokeResponse.from_payload(b"\xff", request_id),
+            id="from-payload-not-utf-8",
         ),
     ],
 )

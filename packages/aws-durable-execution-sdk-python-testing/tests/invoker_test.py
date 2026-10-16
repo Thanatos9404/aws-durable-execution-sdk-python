@@ -15,6 +15,7 @@ from aws_durable_execution_sdk_python.execution import (
 )
 
 from aws_durable_execution_sdk_python.lambda_service import (
+    ErrorObject,
     ExecutionDetails,
     Operation,
     OperationStatus,
@@ -179,6 +180,20 @@ def test_in_process_invoker_resolves_a_qualified_identifier_then_the_bare_name()
     assert seen[0][1].endswith(":function:child:prod")
 
 
+def _response_metadata(request_id: str) -> dict:
+    """ResponseMetadata as boto3 returns it: the request ID, and the
+    response headers with lowercased names."""
+    return {
+        "RequestId": request_id,
+        "HTTPStatusCode": 200,
+        "HTTPHeaders": {
+            "content-type": "application/json",
+            "x-amzn-requestid": request_id,
+        },
+        "RetryAttempts": 0,
+    }
+
+
 def _stub_success_client() -> Mock:
     client = Mock()
     payload = Mock()
@@ -290,6 +305,21 @@ def test_in_process_invoker_invoke():
             id="error-not-an-object",
         ),
         pytest.param(
+            {"Status": "SUCCEEDED", "Error": []},
+            "Invalid invocation output: 'list' object has no attribute 'get'",
+            id="error-empty-list",
+        ),
+        pytest.param(
+            {"Status": "SUCCEEDED", "Error": 0},
+            "Invalid invocation output: 'int' object has no attribute 'get'",
+            id="error-zero",
+        ),
+        pytest.param(
+            {"Status": "SUCCEEDED", "Error": False},
+            "Invalid invocation output: 'bool' object has no attribute 'get'",
+            id="error-false",
+        ),
+        pytest.param(
             "SUCCEEDED",
             "Invalid invocation output: 'str' object has no attribute 'get'",
             id="not-an-object",
@@ -320,6 +350,27 @@ def test_in_process_invoker_rejects_an_output_it_cannot_parse(output, message):
 
     assert str(exc_info.value) == message
     assert exc_info.value.request_id == "test-invoke-12345"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(
+            {}, ErrorObject(None, None, None, None), id="empty-object-is-an-error"
+        ),
+        pytest.param(None, None, id="null-is-no-error"),
+    ],
+)
+def test_in_process_invoker_keeps_an_empty_error_object(error, expected):
+    """An empty Error object is still an Error, so the executor rejects it on
+    SUCCEEDED; only a missing or null Error means there is none."""
+    invoker = InProcessInvoker(
+        Mock(return_value={"Status": "SUCCEEDED", "Error": error}), Mock()
+    )
+
+    response = invoker.invoke("test-function", _minimal_input())
+
+    assert response.invocation_output.error == expected
 
 
 def test_lambda_invoker_init():
@@ -541,7 +592,7 @@ def test_lambda_invoker_invoke_uses_the_region_given_for_an_own_endpoint():
             client.invoke.return_value = {
                 "StatusCode": 200,
                 "Payload": payload,
-                "ResponseMetadata": {"HTTPHeaders": {"x-amzn-RequestId": "r"}},
+                "ResponseMetadata": _response_metadata("r"),
             }
             return client
 
@@ -663,7 +714,7 @@ def test_lambda_invoker_invoke_success():
     lambda_client.invoke.return_value = {
         "StatusCode": 200,
         "Payload": mock_payload,
-        "ResponseMetadata": {"HTTPHeaders": {"x-amzn-RequestId": "test-request-id"}},
+        "ResponseMetadata": _response_metadata("test-request-id"),
     }
 
     invoker = LambdaInvoker(lambda_client)
@@ -841,9 +892,7 @@ def test_lambda_invoker_invoke_status_202():
     lambda_client.invoke.return_value = {
         "StatusCode": 202,
         "Payload": mock_payload,
-        "ResponseMetadata": {
-            "HTTPHeaders": {"x-amzn-RequestId": "test-request-id-202"}
-        },
+        "ResponseMetadata": _response_metadata("test-request-id-202"),
     }
 
     invoker = LambdaInvoker(lambda_client)
@@ -908,6 +957,12 @@ def test_lambda_invoker_invoke_function_error():
             "Invalid invocation output: 'list' object has no attribute 'get'",
             id="not-an-object",
         ),
+        pytest.param(
+            b"\xff",
+            "Invalid invocation output: 'utf-8' codec can't decode byte 0xff"
+            " in position 0: invalid start byte",
+            id="not-utf-8",
+        ),
     ],
 )
 def test_lambda_invoker_rejects_an_output_it_cannot_parse(payload, message):
@@ -923,7 +978,7 @@ def test_lambda_invoker_rejects_an_output_it_cannot_parse(payload, message):
     lambda_client.invoke.return_value = {
         "StatusCode": 200,
         "Payload": mock_payload,
-        "ResponseMetadata": {"HTTPHeaders": {"x-amzn-RequestId": "test-request-id"}},
+        "ResponseMetadata": _response_metadata("test-request-id"),
     }
 
     invoker = LambdaInvoker(lambda_client)
@@ -938,6 +993,100 @@ def test_lambda_invoker_rejects_an_output_it_cannot_parse(payload, message):
 
     assert str(exc_info.value) == message
     assert exc_info.value.request_id == "test-request-id"
+
+
+@pytest.mark.parametrize(
+    ("metadata", "request_id"),
+    [
+        pytest.param(
+            {
+                "RequestId": "from-metadata",
+                "HTTPHeaders": {"x-amzn-requestid": "from-header"},
+            },
+            "from-metadata",
+            id="response-metadata",
+        ),
+        pytest.param(
+            {"HTTPHeaders": {"x-amzn-requestid": "from-header"}},
+            "from-header",
+            id="lowercase-header",
+        ),
+        pytest.param(
+            {"HTTPHeaders": {"X-Amzn-RequestId": "from-header"}},
+            "from-header",
+            id="mixed-case-header",
+        ),
+        pytest.param(
+            {"HTTPHeaders": {"x-amzn-request-id": "from-header"}},
+            "from-header",
+            id="request-id-header",
+        ),
+    ],
+)
+def test_lambda_invoker_reads_the_request_id_from_the_response(metadata, request_id):
+    """The request ID comes from ResponseMetadata, then from the response
+    headers, whatever the case of their names."""
+    client = _stub_success_client()
+    client.invoke.return_value["ResponseMetadata"] = metadata
+
+    response = LambdaInvoker(client).invoke("test-function", _minimal_input())
+
+    assert response.request_id == request_id
+
+
+def _botocore_answers_invoke(monkeypatch, body: bytes) -> LambdaInvoker:
+    """A LambdaInvoker on a real client whose Invoke returns ``body``.
+
+    The response, with header ``x-amzn-RequestId: request-1``, is
+    returned at ``before-send``, so botocore parses it as it would one
+    from the endpoint.
+    """
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    client = create_lambda_client("http://localhost:3001", "us-west-2")
+
+    def answer(request, **_kwargs):
+        return AWSResponse(
+            request.url,
+            200,
+            {"Content-Type": "application/json", "x-amzn-RequestId": "request-1"},
+            _RawBody(body),
+        )
+
+    client.meta.events.register("before-send.lambda.Invoke", answer)
+    return LambdaInvoker(client)
+
+
+def test_lambda_invoker_keeps_the_request_id_botocore_parses(monkeypatch):
+    """The response carries the request ID the endpoint sent, not a generated one."""
+    invoker = _botocore_answers_invoke(monkeypatch, b'{"Status": "SUCCEEDED"}')
+
+    response = invoker.invoke("test-function", _minimal_input())
+
+    assert response.request_id == "request-1"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"not json", id="not-json"),
+        pytest.param(b'{"Status": "DONE"}', id="unknown-status"),
+        pytest.param(b"\xff", id="not-utf-8"),
+    ],
+)
+def test_lambda_invoker_rejects_with_the_request_id_botocore_parses(monkeypatch, body):
+    """An output that cannot be parsed, undecodable bytes included, raises
+    InvalidInvocationOutputError with the request ID the endpoint sent."""
+    from aws_durable_execution_sdk_python_testing.exceptions import (
+        InvalidInvocationOutputError,
+    )
+
+    invoker = _botocore_answers_invoke(monkeypatch, body)
+
+    with pytest.raises(InvalidInvocationOutputError) as exc_info:
+        invoker.invoke("test-function", _minimal_input())
+
+    assert exc_info.value.request_id == "request-1"
 
 
 def _create_mock_lambda_client_with_exceptions():
